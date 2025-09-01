@@ -1,0 +1,26 @@
+body {
+  font-family: "Poppins", sans-serif;
+  background-color: #f8f9fa;
+}
+.header {
+  background-color: #ffffff;
+  padding: 15px 0;
+  /* box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); */
+  /* position: sticky;
+  top: 0;
+  z-index: 1000; */
+}
+.title {
+  font-weight: 600;
+}
+
+/* Header */
+.header .btn-outline-dark {
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 1);
+}
+
+/*ECONOMIC FACTOR ANALYSIS*/
+.column1 {
+  float: left;
+  width: 50%;
+}
