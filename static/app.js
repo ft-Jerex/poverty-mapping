@@ -15,12 +15,50 @@ const toggleButtons = Array.from(document.querySelectorAll(".model-toggle"));
 const opacitySlider = document.getElementById("opacity-slider");
 const opacityValue = document.getElementById("opacity-value");
 const legendModelNameEl = document.getElementById("legend-model-name");
+const legendContainer = document.querySelector(
+  '.backdrop-blur.bg-slate-900\\/75.border.border-slate-700.rounded-lg.shadow-lg.px-4.py-3.w-52.text-xs.text-slate-200.space-y-2'
+);
+let quartileRanges = {};
 const pieCanvas = document.getElementById("category-pie");
+const pieSummaryEl = document.getElementById("category-pie-summary");
 const barCanvas = document.getElementById("top5-bar");
+const top5CategoryFilter = document.getElementById("top5-category-filter");
 const brgySearchInput = document.getElementById("brgy-search-input");
 const brgySearchBtn = document.getElementById("brgy-search-btn");
 const brgySearchStatus = document.getElementById("brgy-search-status");
 const brgyTilesCanvas = document.getElementById("brgy-tiles-chart");
+const brgyDropdown = document.getElementById("brgy-dropdown");
+
+function formatRange(min, max) {
+  // Show as percent with 1 decimal
+  return `${min.toFixed(1)}% – ${max.toFixed(1)}%`;
+}
+
+function updateLegend(modelKey) {
+  if (!legendContainer || !quartileRanges[modelKey]) return;
+  const ranges = quartileRanges[modelKey];
+  // Find the legend color blocks
+  const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
+  if (legendBlocks.length !== 4) return;
+  for (let i = 0; i < 4; ++i) {
+    const range = ranges[i];
+    const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
+    if (labelSpan && range) {
+      // Update label to include value range
+      let labelText = "";
+      if (range.label === "Not poor") {
+        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Lower-middle") {
+        labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Upper-middle") {
+        labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Poorest") {
+        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
+      }
+      labelSpan.textContent = labelText;
+    }
+  }
+}
 
 const modelLayers = {
   catboost: null,
@@ -137,31 +175,64 @@ function getCategoryStats(modelKey) {
   };
 }
 
-function getTop5Barangays(modelKey) {
+function getTop5Barangays(modelKey, categoryFilter = "all") {
   const geo = modelGeojson[modelKey];
   if (!geo || !Array.isArray(geo.features)) {
-    return { labels: [], values: [] };
+    return { labels: [], values: [], mode: categoryFilter === "all" ? "overall" : "category", category: categoryFilter };
   }
 
   const stats = new Map();
+  const qField = getQuartileField(modelKey);
 
   geo.features.forEach((f) => {
     const props = f.properties || {};
     const rawPct = props.poverty_pct;
     const val = Number(rawPct);
-    if (!Number.isFinite(val)) return;
     const name = props.barangay || "Unknown";
+    const label = props[qField];
 
-    const rec = stats.get(name) || { sum: 0, count: 0 };
-    rec.sum += val;
+    let rec = stats.get(name);
+    if (!rec) {
+      rec = {
+        sumPoverty: 0,
+        count: 0,
+        catCounts: {
+          "Not poor": 0,
+          "Lower-middle": 0,
+          "Upper-middle": 0,
+          Poorest: 0,
+        },
+      };
+    }
+
+    if (Number.isFinite(val)) {
+      rec.sumPoverty += val;
+    }
     rec.count += 1;
+    if (label && Object.prototype.hasOwnProperty.call(rec.catCounts, label)) {
+      rec.catCounts[label] += 1;
+    }
+
     stats.set(name, rec);
   });
 
-  const arr = Array.from(stats.entries()).map(([name, rec]) => ({
-    name,
-    value: rec.count ? rec.sum / rec.count : 0,
-  }));
+  let arr;
+
+  if (categoryFilter === "all") {
+    arr = Array.from(stats.entries()).map(([name, rec]) => ({
+      name,
+      value: rec.count ? rec.sumPoverty / rec.count : 0,
+    }));
+  } else {
+    arr = Array.from(stats.entries()).map(([name, rec]) => {
+      const total = rec.count || 1;
+      const catCount = rec.catCounts[categoryFilter] || 0;
+      return {
+        name,
+        value: (catCount / total) * 100,
+      };
+    });
+  }
 
   arr.sort((a, b) => b.value - a.value);
   const top5 = arr.slice(0, 5);
@@ -169,6 +240,8 @@ function getTop5Barangays(modelKey) {
   return {
     labels: top5.map((d) => d.name),
     values: top5.map((d) => Number(d.value.toFixed(1))),
+    mode: categoryFilter === "all" ? "overall" : "category",
+    category: categoryFilter,
   };
 }
 
@@ -326,7 +399,29 @@ function updateCharts(modelKey) {
   if (!pieCanvas || !barCanvas || typeof Chart === "undefined") return;
 
   const catStats = getCategoryStats(modelKey);
-  const top5 = getTop5Barangays(modelKey);
+  const totalCells = catStats.counts.reduce((a, b) => a + b, 0) || 1;
+
+  if (pieSummaryEl) {
+    pieSummaryEl.innerHTML = catStats.labels
+      .map((label, idx) => {
+        const count = catStats.counts[idx] || 0;
+        const pct = (count / totalCells) * 100;
+        const color = getQuartileColor(label);
+        return `
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="inline-block w-2 h-2 rounded-sm" style="background-color: ${color};"></span>
+              <span>${label}</span>
+            </div>
+            <span class="text-slate-400">${pct.toFixed(1)}% of tiles</span>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  const categoryFilter = top5CategoryFilter ? top5CategoryFilter.value || "all" : "all";
+  const top5 = getTop5Barangays(modelKey, categoryFilter);
 
   if (pieChart) pieChart.destroy();
   pieChart = new Chart(pieCanvas.getContext("2d"), {
@@ -353,7 +448,7 @@ function updateCharts(modelKey) {
               const total = dataArr.reduce((a, b) => a + b, 0) || 1;
               const count = ctx.parsed || 0;
               const pct = (count / total) * 100;
-              return `${ctx.label}: ${count} cells (${pct.toFixed(1)}%)`;
+              return `${ctx.label}: ${count} tiles (${pct.toFixed(1)}%)`;
             },
           },
         },
@@ -369,7 +464,10 @@ function updateCharts(modelKey) {
       datasets: [
         {
           data: top5.values,
-          backgroundColor: "#ef4444",
+          backgroundColor:
+            top5.mode === "overall"
+              ? top5.labels.map(() => "#ef4444")
+              : top5.labels.map(() => getQuartileColor(top5.category)),
           borderRadius: 4,
         },
       ],
@@ -407,7 +505,25 @@ function updateCharts(modelKey) {
         },
         tooltip: {
           callbacks: {
-            label: (ctx) => `${ctx.parsed.y.toFixed(1)}%`,
+            label: (ctx) => {
+              const value = ctx.parsed.y;
+              if (top5.mode === "overall") {
+                return `${value.toFixed(1)}% predicted poverty`;
+              }
+              if (top5.category === "Poorest") {
+                return `${value.toFixed(1)}% of tiles in Poorest category`;
+              }
+              if (top5.category === "Upper-middle") {
+                return `${value.toFixed(1)}% of tiles in Upper-middle category`;
+              }
+              if (top5.category === "Lower-middle") {
+                return `${value.toFixed(1)}% of tiles in Lower-middle category`;
+              }
+              if (top5.category === "Not poor") {
+                return `${value.toFixed(1)}% of tiles in Not poor category`;
+              }
+              return `${value.toFixed(1)}%`;
+            },
           },
         },
       },
@@ -503,6 +619,7 @@ function activateModel(modelKey) {
     legendModelNameEl.textContent =
       modelKey === "catboost" ? "CatBoost" : modelKey === "rf" ? "Random Forest" : "CNN";
   }
+  updateLegend(modelKey);
 
   toggleButtons.forEach((btn) => {
     const key = btn.getAttribute("data-model");
@@ -517,7 +634,11 @@ function activateModel(modelKey) {
 
   setStatus(
     `Showing ${
-      modelKey === "catboost" ? "CatBoost" : modelKey === "rf" ? "Random Forest" : "CNN"
+      modelKey === "catboost"
+        ? "CatBoost"
+        : modelKey === "rf"
+        ? "Random Forest"
+        : "CNN"
     } predictions • Hover a grid to see barangay and poverty details`,
   );
 
@@ -614,6 +735,7 @@ function setupBarangaySearch() {
 
   const runSearch = () => {
     const term = brgySearchInput.value.trim();
+
     if (!term) {
       if (brgySearchStatus) {
         brgySearchStatus.textContent = "Enter a barangay name to search.";
@@ -645,6 +767,64 @@ function setupBarangaySearch() {
       runSearch();
     }
   });
+
+  if (brgyDropdown) {
+    brgyDropdown.addEventListener("change", () => {
+      const value = brgyDropdown.value;
+      if (value) {
+        brgySearchInput.value = value;
+        runSearch();
+      }
+    });
+  }
+}
+
+function setupTop5CategoryFilter() {
+  if (!top5CategoryFilter) return;
+
+  top5CategoryFilter.addEventListener("change", () => {
+    updateCharts(activeModel);
+  });
+}
+
+function getAllBarangayNamesFromBoundary() {
+  if (!boundaryGeojson || !Array.isArray(boundaryGeojson.features)) return [];
+
+  const seen = new Set();
+  const names = [];
+
+  boundaryGeojson.features.forEach((f) => {
+    const props = f.properties || {};
+    const rawName = props.barangay || props.adm4_en;
+    if (!rawName) return;
+    const name = rawName.toString().trim();
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  });
+
+  names.sort((a, b) => a.localeCompare(b));
+  return names;
+}
+
+function populateBarangayDropdown() {
+  if (!brgyDropdown) return;
+
+  const names = getAllBarangayNamesFromBoundary();
+  brgyDropdown.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Select barangay...";
+  brgyDropdown.appendChild(placeholder);
+
+  names.forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    brgyDropdown.appendChild(opt);
+  });
 }
 
 async function loadPredictions() {
@@ -655,6 +835,9 @@ async function loadPredictions() {
       throw new Error(`Request failed with status ${res.status}`);
     }
     const data = await res.json();
+    if (data.quartileRanges) {
+      quartileRanges = data.quartileRanges;
+    }
 
     if (data.boundary) {
       boundaryGeojson = data.boundary;
@@ -671,6 +854,7 @@ async function loadPredictions() {
       } catch (e) {
         console.error("Error fitting bounds:", e);
       }
+      populateBarangayDropdown();
     }
 
     if (data.barangayLabels) {
@@ -730,6 +914,7 @@ async function loadPredictions() {
     setupOpacitySlider();
     setupBarangayLayerToggles();
     setupBarangaySearch();
+    setupTop5CategoryFilter();
 
     console.log("All setup complete!");
   } catch (err) {

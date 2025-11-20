@@ -9,11 +9,11 @@ from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = Path(__file__).resolve().parent
 
-GRID_GEOJSON_PATH = Path(r"c:/Users/Jerard/poverty_mapping/assets/grid_with_comprehensive_data.geojson")
-MERGED_PREDICTIONS_PATH = Path(r"c:/Users/Jerard/poverty_mapping/output/grid_predictions_comparison.csv")
-GRID_GPKG_PATH = Path(r"c:/Users/Jerard/Documents/GitHub/CNN Mapping/output/grids/grid_1km_all.gpkg")
-CNN_PRED_PATH = Path(r"c:/Users/Jerard/Documents/GitHub/CNN Mapping/output/fusion_pytorch_1km/all_cells_predictions_1km.csv")
-SHAPEFILE_PATH = Path(r"c:/Users/Jerard/Documents/GitHub/CNN Mapping/data/shapefile/zc04AdminBoundaries_gcs.shp")
+GRID_GEOJSON_PATH = BASE_DIR / "data" / "grid_with_comprehensive_data.geojson"
+MERGED_PREDICTIONS_PATH = BASE_DIR / "data" / "grid_predictions_comparison.csv"
+GRID_GPKG_PATH = BASE_DIR / "data" / "grid_1km_all.gpkg"
+CNN_PRED_PATH = BASE_DIR / "data" / "all_cells_predictions_1km.csv"
+SHAPEFILE_PATH = BASE_DIR / "data" / "shapefile" / "zc04AdminBoundaries_gcs.shp"
 
 app = FastAPI(title="Zamboanga Poverty Mapping")
 
@@ -87,21 +87,38 @@ def _prepare_data() -> dict:
     else:
         gdf["barangay"] = None
 
+    # Calculate quartiles and value ranges for legend
+    quartile_ranges = {}
+
     valid_cat = gdf["pred_scaled_catboost"].notna()
     if valid_cat.any():
-        gdf.loc[valid_cat, "poverty_quartile_catboost"] = pd.qcut(
+        cat_quartiles, cat_bins = pd.qcut(
             gdf.loc[valid_cat, "pred_scaled_catboost"],
             q=4,
             labels=["Not poor", "Lower-middle", "Upper-middle", "Poorest"],
+            retbins=True,
+            duplicates="drop",
         )
+        gdf.loc[valid_cat, "poverty_quartile_catboost"] = cat_quartiles
+        quartile_ranges["catboost"] = [
+            {"label": l, "min": float(cat_bins[i]), "max": float(cat_bins[i+1])}
+            for i, l in enumerate(["Not poor", "Lower-middle", "Upper-middle", "Poorest"])
+        ]
 
     valid_rf = gdf["pred_scaled_rf"].notna()
     if valid_rf.any():
-        gdf.loc[valid_rf, "poverty_quartile_rf"] = pd.qcut(
+        rf_quartiles, rf_bins = pd.qcut(
             gdf.loc[valid_rf, "pred_scaled_rf"],
             q=4,
             labels=["Not poor", "Lower-middle", "Upper-middle", "Poorest"],
+            retbins=True,
+            duplicates="drop",
         )
+        gdf.loc[valid_rf, "poverty_quartile_rf"] = rf_quartiles
+        quartile_ranges["rf"] = [
+            {"label": l, "min": float(rf_bins[i]), "max": float(rf_bins[i+1])}
+            for i, l in enumerate(["Not poor", "Lower-middle", "Upper-middle", "Poorest"])
+        ]
 
     cat_cols = [
         "grid_id",
@@ -144,11 +161,18 @@ def _prepare_data() -> dict:
 
     valid_cnn = cnn_map["predicted_poverty"].notna()
     if valid_cnn.any():
-        cnn_map.loc[valid_cnn, "poverty_quartile_cnn"] = pd.qcut(
+        cnn_quartiles, cnn_bins = pd.qcut(
             cnn_map.loc[valid_cnn, "predicted_poverty"],
             q=4,
             labels=["Not poor", "Lower-middle", "Upper-middle", "Poorest"],
+            retbins=True,
+            duplicates="drop",
         )
+        cnn_map.loc[valid_cnn, "poverty_quartile_cnn"] = cnn_quartiles
+        quartile_ranges["cnn"] = [
+            {"label": l, "min": float(cnn_bins[i]), "max": float(cnn_bins[i+1])}
+            for i, l in enumerate(["Not poor", "Lower-middle", "Upper-middle", "Poorest"])
+        ]
 
     if barangay_col:
         roi_subset = roi_gdf[[barangay_col, "geometry"]].copy()
@@ -182,7 +206,20 @@ def _prepare_data() -> dict:
         brgy_labels_gdf = roi_gdf[["geometry"]].copy()
         brgy_labels_gdf["barangay"] = None
 
-    brgy_labels_gdf["geometry"] = brgy_labels_gdf.geometry.centroid
+    # Compute centroids in a projected CRS to avoid inaccurate results in
+    # geographic (lat/lon) CRS, then transform back.
+    if brgy_labels_gdf.crs is not None and not brgy_labels_gdf.crs.is_projected:
+        try:
+            projected = brgy_labels_gdf.to_crs(brgy_labels_gdf.estimate_utm_crs())
+            centroids_proj = projected.geometry.centroid
+            centroids = centroids_proj.to_crs(brgy_labels_gdf.crs)
+        except Exception:
+            # Fallback: compute in-place centroids even if CRS is geographic
+            centroids = brgy_labels_gdf.geometry.centroid
+    else:
+        centroids = brgy_labels_gdf.geometry.centroid
+
+    brgy_labels_gdf["geometry"] = centroids
     barangay_labels_geojson = _to_geojson_dict(brgy_labels_gdf[["barangay", "geometry"]])
 
     cat_geojson = _to_geojson_dict(cat_gdf)
@@ -197,6 +234,7 @@ def _prepare_data() -> dict:
             "rf": rf_geojson,
             "cnn": cnn_geojson,
         },
+        "quartileRanges": quartile_ranges,
     }
 
 
