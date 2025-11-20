@@ -113,6 +113,10 @@
             <span>Barangay names</span>
             <input id="toggle-brgy-labels" type="checkbox" class="accent-emerald-500" checked />
           </label>
+          <label class="flex items-center justify-between text-xs text-slate-200">
+            <span>Census poverty (barangay)</span>
+            <input id="toggle-census-poverty" type="checkbox" class="accent-emerald-500" />
+          </label>
         </div>
       </div>
 
@@ -159,7 +163,25 @@
           Summary by poverty category and barangay for the selected model.
         </p>
       </div>
-      <div class="flex-1 flex flex-col overflow-y-auto">
+
+      <div class="px-4 border-b border-slate-800">
+        <div class="flex space-x-4 text-xs">
+          <button
+            id="tab-geospatial"
+            class="px-3 py-2 border-b-2 border-emerald-500 text-slate-100 font-medium transition-colors"
+          >
+            Geospatial
+          </button>
+          <button
+            id="tab-statistics"
+            class="px-3 py-2 border-b-2 border-transparent text-slate-400 font-medium hover:text-slate-200 transition-colors"
+          >
+            Statistics
+          </button>
+        </div>
+      </div>
+
+      <div id="panel-geospatial" class="flex-1 flex flex-col overflow-y-auto">
         <div class="p-4 border-b border-slate-800 h-1/2 min-h-[200px]">
           <h3 class="text-xs font-semibold text-slate-200 mb-2">Category distribution</h3>
           <div class="flex items-center justify-center">
@@ -217,6 +239,71 @@
           </div>
         </div>
       </div>
+
+      <div id="panel-statistics" class="flex-1 flex flex-col overflow-y-auto hidden">
+        <div class="p-4 border-b border-slate-800">
+          <h3 class="text-xs font-semibold text-slate-200 mb-1">Top barangays by census poverty</h3>
+          <p class="text-[11px] text-slate-400 mb-3">
+            Based on the share of poor households among all assessed households.
+          </p>
+          <div class="h-40">
+            <canvas id="stats-top-hh" class="w-full h-full"></canvas>
+          </div>
+        </div>
+
+        <div class="p-4 border-b border-slate-800">
+          <h3 class="text-xs font-semibold text-slate-200 mb-1">School attendance among poor children</h3>
+          <p class="text-[11px] text-slate-400 mb-3">
+            Citywide share of poor children who are attending versus not attending school, and barangays contributing most to non-attendance.
+          </p>
+          <div class="h-40 flex justify-around">
+            <div class="flex-1">
+              <canvas id="stats-children" class="w-full h-full"></canvas>
+            </div>
+            <div class="flex-1">
+              <canvas id="stats-children-top-nonattend" class="w-full h-full"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="p-4 border-b border-slate-800">
+          <h3 class="text-xs font-semibold text-slate-200 mb-1">Water source for poor households</h3>
+          <p class="text-[11px] text-slate-400 mb-3">
+            Distribution of main water sources used by poor households.
+          </p>
+          <div class="h-40">
+            <canvas id="stats-water" class="w-full h-full"></canvas>
+          </div>
+        </div>
+
+        <div class="p-4">
+          <h3 class="text-xs font-semibold text-slate-200 mb-1">Employment profile of poor workers</h3>
+          <p class="text-[11px] text-slate-400 mb-3">
+            Breakdown of poor workers by major occupation group.
+          </p>
+          <div class="h-48">
+            <canvas id="stats-employment" class="w-full h-full"></canvas>
+          </div>
+        </div>
+
+        <div class="p-4 border-t border-slate-800">
+          <h3 class="text-xs font-semibold text-slate-200 mb-1">Barangay factors</h3>
+          <p class="text-[11px] text-slate-400 mb-3">
+            Select a barangay to see a quick profile of key poverty and vulnerability indicators.
+          </p>
+          <div class="flex items-center gap-2 mb-3">
+            <select
+              id="barangay-factors-select"
+              class="w-full bg-slate-900/80 border border-slate-700 rounded-md px-2 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+            >
+              <option value="">Select barangay...</option>
+            </select>
+          </div>
+          <div class="h-48">
+            <canvas id="stats-barangay-factors" class="w-full h-full"></canvas>
+          </div>
+        </div>
+      </div>
     </aside>
   </main>
 
@@ -226,6 +313,6 @@
     crossorigin=""
   ></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>
