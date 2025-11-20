@@ -66,8 +66,15 @@
         <button class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors">
           Upload
         </button>
-        <button class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors">
-          Download
+        <button
+          id="refresh-btn"
+          class="px-3 py-1.5 rounded-full bg-emerald-500 text-slate-900 border border-emerald-400 hover:bg-emerald-400 transition-colors font-semibold">
+          Refresh
+        </button>
+        <button
+          id="download-map-btn"
+          class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors">
+          Download map
         </button>
       </div>
     </div>
@@ -112,6 +119,10 @@
           <label class="flex items-center justify-between text-xs text-slate-200">
             <span>Barangay names</span>
             <input id="toggle-brgy-labels" type="checkbox" class="accent-emerald-500" checked />
+          </label>
+          <label class="flex items-center justify-between text-xs text-slate-200">
+            <span>Satellite basemap</span>
+            <input id="toggle-satellite" type="checkbox" class="accent-emerald-500" />
           </label>
         </div>
       </div>
@@ -201,6 +212,7 @@
     crossorigin=""
   ></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

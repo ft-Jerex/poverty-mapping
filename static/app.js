@@ -4,11 +4,22 @@ const map = L.map("map", {
 
 L.control.zoom({ position: "topright" }).addTo(map);
 
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+let osmBase = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution:
     '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-}).addTo(map);
+});
+
+let satelliteBase = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  {
+    maxZoom: 19,
+    attribution:
+      'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+  },
+);
+
+osmBase.addTo(map);
 
 const statusEl = document.getElementById("status");
 const toggleButtons = Array.from(document.querySelectorAll(".model-toggle"));
@@ -21,6 +32,8 @@ const brgySearchInput = document.getElementById("brgy-search-input");
 const brgySearchBtn = document.getElementById("brgy-search-btn");
 const brgySearchStatus = document.getElementById("brgy-search-status");
 const brgyTilesCanvas = document.getElementById("brgy-tiles-chart");
+const refreshBtn = document.getElementById("refresh-btn");
+const downloadMapBtn = document.getElementById("download-map-btn");
 
 const modelLayers = {
   catboost: null,
@@ -46,6 +59,32 @@ let currentOpacity = 0.8;
 let pieChart = null;
 let barChart = null;
 let brgyTilesChart = null;
+
+function clearAllLayers() {
+  if (boundaryLayer && map.hasLayer(boundaryLayer)) {
+    map.removeLayer(boundaryLayer);
+  }
+  if (barangayLabelLayer && map.hasLayer(barangayLabelLayer)) {
+    map.removeLayer(barangayLabelLayer);
+  }
+  if (barangayHighlightLayer && map.hasLayer(barangayHighlightLayer)) {
+    map.removeLayer(barangayHighlightLayer);
+  }
+
+  Object.keys(modelLayers).forEach((key) => {
+    const layer = modelLayers[key];
+    if (layer && map.hasLayer(layer)) {
+      map.removeLayer(layer);
+    }
+    modelLayers[key] = null;
+    modelGeojson[key] = null;
+  });
+
+  boundaryLayer = null;
+  barangayLabelLayer = null;
+  barangayHighlightLayer = null;
+  boundaryGeojson = null;
+}
 
 function setStatus(text, tone = "info") {
   if (!statusEl) return;
@@ -517,7 +556,11 @@ function activateModel(modelKey) {
 
   setStatus(
     `Showing ${
-      modelKey === "catboost" ? "CatBoost" : modelKey === "rf" ? "Random Forest" : "CNN"
+      modelKey === "catboost"
+        ? "CatBoost"
+        : modelKey === "rf"
+        ? "Random Forest"
+        : "CNN"
     } predictions • Hover a grid to see barangay and poverty details`,
   );
 
@@ -573,6 +616,7 @@ function setupOpacitySlider() {
 function setupBarangayLayerToggles() {
   const borderToggle = document.getElementById("toggle-brgy-borders");
   const labelToggle = document.getElementById("toggle-brgy-labels");
+  const satelliteToggle = document.getElementById("toggle-satellite");
 
   if (borderToggle) {
     borderToggle.addEventListener("change", (e) => {
@@ -581,6 +625,37 @@ function setupBarangayLayerToggles() {
         boundaryLayer.addTo(map);
       } else if (map.hasLayer(boundaryLayer)) {
         map.removeLayer(boundaryLayer);
+      }
+    });
+  }
+
+  if (satelliteToggle) {
+    // Apply initial state on load
+    if (satelliteToggle.checked) {
+      if (osmBase && map.hasLayer(osmBase)) {
+        map.removeLayer(osmBase);
+      }
+      if (satelliteBase && !map.hasLayer(satelliteBase)) {
+        satelliteBase.addTo(map);
+      }
+    }
+
+    satelliteToggle.addEventListener("change", (e) => {
+      const useSatellite = e.target.checked;
+      if (useSatellite) {
+        if (osmBase && map.hasLayer(osmBase)) {
+          map.removeLayer(osmBase);
+        }
+        if (satelliteBase && !map.hasLayer(satelliteBase)) {
+          satelliteBase.addTo(map);
+        }
+      } else {
+        if (satelliteBase && map.hasLayer(satelliteBase)) {
+          map.removeLayer(satelliteBase);
+        }
+        if (osmBase && !map.hasLayer(osmBase)) {
+          osmBase.addTo(map);
+        }
       }
     });
   }
@@ -645,6 +720,84 @@ function setupBarangaySearch() {
       runSearch();
     }
   });
+}
+
+async function downloadMapImage() {
+  if (!downloadMapBtn || typeof html2canvas === "undefined") {
+    return;
+  }
+
+  try {
+    downloadMapBtn.disabled = true;
+    setStatus("Preparing map image for download…");
+
+    const mapEl = document.getElementById("map");
+    if (!mapEl) {
+      setStatus("Map element not found.", "error");
+      return;
+    }
+
+    const canvas = await html2canvas(mapEl, {
+      useCORS: true,
+      logging: false,
+      scale: 2,
+      backgroundColor: "#020617",
+    });
+
+    const dataUrl = canvas.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = "zamboanga_poverty_map.png";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setStatus("Map image downloaded.");
+  } catch (err) {
+    console.error("Error downloading map image:", err);
+    setStatus("Failed to download map image.", "error");
+  } finally {
+    if (downloadMapBtn) {
+      downloadMapBtn.disabled = false;
+    }
+  }
+}
+
+async function refreshPredictions() {
+  if (!refreshBtn) {
+    return;
+  }
+
+  try {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = "Refreshing…";
+    setStatus("Refreshing predictions from latest data…");
+
+    const res = await fetch("/api/refresh", { method: "POST" });
+    if (!res.ok) {
+      throw new Error(`Refresh failed with status ${res.status}`);
+    }
+    const data = await res.json();
+
+    if (!data || data.success === false) {
+      const msg = data && data.error ? data.error : "Unknown refresh error";
+      setStatus(`Refresh failed: ${msg}`, "error");
+      return;
+    }
+
+    // Clear existing layers and reload predictions
+    clearAllLayers();
+    await loadPredictions();
+
+    const note = data.message || "Refresh completed.";
+    setStatus(`${note} Showing latest predictions.`);
+  } catch (err) {
+    console.error("Error during refresh:", err);
+    setStatus("Failed to refresh predictions. Check backend logs.", "error");
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = "Refresh";
+  }
 }
 
 async function loadPredictions() {
@@ -730,6 +883,13 @@ async function loadPredictions() {
     setupOpacitySlider();
     setupBarangayLayerToggles();
     setupBarangaySearch();
+
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", refreshPredictions);
+    }
+    if (downloadMapBtn) {
+      downloadMapBtn.addEventListener("click", downloadMapImage);
+    }
 
     console.log("All setup complete!");
   } catch (err) {

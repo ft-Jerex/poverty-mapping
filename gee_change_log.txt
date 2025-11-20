@@ -1,0 +1,5 @@
+2025-11-21T03:15:00+08:00 - Created Sentinel-2 test script scripts/test_gee_extraction.py and validated export task creation.
+2025-11-21T03:20:00+08:00 - Hardened BaseExtractor.export_image to strip dimension parameters and rely on scale/region.
+2025-11-21T03:22:00+08:00 - Implemented additional extractors: LandsatExtractor, MODISExtractor, CHIRPSExtractor, DEMExtractor under src/gee/extractors/.
+2025-11-21T03:24:00+08:00 - Added QuarterlyPipeline in src/gee/pipeline.py and multi-dataset smoke test script scripts/test_multi_extractors.py.
+2025-11-21T03:30:00+08:00 - Refactored Sentinel2Extractor.mask_clouds and process_image to avoid client-side getInfo inside mapped functions; multi-extractor smoke test currently focused on Sentinel-2 and DEM.
