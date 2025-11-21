@@ -114,6 +114,13 @@ let currentOpacity = 0.8;
 let pieChart = null;
 let barChart = null;
 let brgyTilesChart = null;
+let statsTopHhChart = null;
+let statsChildrenChart = null;
+let statsChildrenTopNonAttendChart = null;
+let statsWaterChart = null;
+let statsEmploymentChart = null;
+let statsBarangayFactorsChart = null;
+let latestStatistics = null;
 
 function setStatus(text, tone = "info") {
   if (!statusEl) return;
@@ -823,6 +830,13 @@ function activateModel(modelKey) {
 
   activeModel = modelKey;
 
+  if (boundaryLayer && map.hasLayer(boundaryLayer)) {
+    boundaryLayer.bringToFront();
+  }
+  if (barangayHighlightLayer && map.hasLayer(barangayHighlightLayer)) {
+    barangayHighlightLayer.bringToFront();
+  }
+
   if (legendModelNameEl) {
     legendModelNameEl.textContent =
       modelKey === "catboost"
@@ -911,6 +925,7 @@ function setupBarangayLayerToggles() {
       if (!boundaryLayer) return;
       if (e.target.checked) {
         boundaryLayer.addTo(map);
+        boundaryLayer.bringToFront();
       } else if (map.hasLayer(boundaryLayer)) {
         map.removeLayer(boundaryLayer);
       }
@@ -1498,11 +1513,14 @@ async function loadPredictions() {
       boundaryGeojson = data.boundary;
       boundaryLayer = L.geoJSON(data.boundary, {
         style: {
-          color: "#e5e7eb",
-          weight: 1,
+          color: "#facc15",
+          weight: 1.5,
+          opacity: 1,
           fillOpacity: 0,
         },
       }).addTo(map);
+
+      boundaryLayer.bringToFront();
 
       try {
         map.fitBounds(boundaryLayer.getBounds(), { padding: [20, 20] });
@@ -1574,6 +1592,7 @@ async function loadPredictions() {
     setupOpacitySlider();
     setupBarangayLayerToggles();
     setupBarangaySearch();
+    setupTop5CategoryFilter();
 
     console.log("All setup complete!");
   } catch (err) {
