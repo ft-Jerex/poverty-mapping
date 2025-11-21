@@ -26,12 +26,64 @@ const toggleButtons = Array.from(document.querySelectorAll(".model-toggle"));
 const opacitySlider = document.getElementById("opacity-slider");
 const opacityValue = document.getElementById("opacity-value");
 const legendModelNameEl = document.getElementById("legend-model-name");
+const legendContainer = document.querySelector(
+  '.backdrop-blur.bg-slate-900\\/75.border.border-slate-700.rounded-lg.shadow-lg.px-4.py-3.w-52.text-xs.text-slate-200.space-y-2'
+);
+let quartileRanges = {};
 const pieCanvas = document.getElementById("category-pie");
+const pieSummaryEl = document.getElementById("category-pie-summary");
 const barCanvas = document.getElementById("top5-bar");
+const top5CategoryFilter = document.getElementById("top5-category-filter");
 const brgySearchInput = document.getElementById("brgy-search-input");
 const brgySearchBtn = document.getElementById("brgy-search-btn");
 const brgySearchStatus = document.getElementById("brgy-search-status");
 const brgyTilesCanvas = document.getElementById("brgy-tiles-chart");
+const brgyDropdown = document.getElementById("brgy-dropdown");
+const geospatialTabBtn = document.getElementById("tab-geospatial");
+const statisticsTabBtn = document.getElementById("tab-statistics");
+const geospatialPanel = document.getElementById("panel-geospatial");
+const statisticsPanel = document.getElementById("panel-statistics");
+const censusToggle = document.getElementById("toggle-census-poverty");
+const statsTopHhCanvas = document.getElementById("stats-top-hh");
+const statsChildrenCanvas = document.getElementById("stats-children");
+const statsChildrenTopNonAttendCanvas = document.getElementById(
+  "stats-children-top-nonattend",
+);
+const statsWaterCanvas = document.getElementById("stats-water");
+const statsEmploymentCanvas = document.getElementById("stats-employment");
+const barangayFactorsSelect = document.getElementById("barangay-factors-select");
+const statsBarangayFactorsCanvas = document.getElementById("stats-barangay-factors");
+
+function formatRange(min, max) {
+  // Show as percent with 1 decimal
+  return `${min.toFixed(1)}% – ${max.toFixed(1)}%`;
+}
+
+function updateLegend(modelKey) {
+  if (!legendContainer || !quartileRanges[modelKey]) return;
+  const ranges = quartileRanges[modelKey];
+  // Find the legend color blocks
+  const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
+  if (legendBlocks.length !== 4) return;
+  for (let i = 0; i < 4; ++i) {
+    const range = ranges[i];
+    const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
+    if (labelSpan && range) {
+      // Update label to include value range
+      let labelText = "";
+      if (range.label === "Not poor") {
+        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Lower-middle") {
+        labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Upper-middle") {
+        labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Poorest") {
+        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
+      }
+      labelSpan.textContent = labelText;
+    }
+  }
+}
 const refreshBtn = document.getElementById("refresh-btn");
 const downloadMapBtn = document.getElementById("download-map-btn");
 
@@ -39,6 +91,7 @@ const modelLayers = {
   catboost: null,
   rf: null,
   cnn: null,
+  census: null,
 };
 
 const modelGeojson = {
@@ -46,6 +99,8 @@ const modelGeojson = {
   rf: null,
   cnn: null,
 };
+
+let censusPovertyGeojson = null;
 
 let boundaryLayer = null;
 let barangayBoundaryLayer = null;
@@ -59,32 +114,6 @@ let currentOpacity = 0.8;
 let pieChart = null;
 let barChart = null;
 let brgyTilesChart = null;
-
-function clearAllLayers() {
-  if (boundaryLayer && map.hasLayer(boundaryLayer)) {
-    map.removeLayer(boundaryLayer);
-  }
-  if (barangayLabelLayer && map.hasLayer(barangayLabelLayer)) {
-    map.removeLayer(barangayLabelLayer);
-  }
-  if (barangayHighlightLayer && map.hasLayer(barangayHighlightLayer)) {
-    map.removeLayer(barangayHighlightLayer);
-  }
-
-  Object.keys(modelLayers).forEach((key) => {
-    const layer = modelLayers[key];
-    if (layer && map.hasLayer(layer)) {
-      map.removeLayer(layer);
-    }
-    modelLayers[key] = null;
-    modelGeojson[key] = null;
-  });
-
-  boundaryLayer = null;
-  barangayLabelLayer = null;
-  barangayHighlightLayer = null;
-  boundaryGeojson = null;
-}
 
 function setStatus(text, tone = "info") {
   if (!statusEl) return;
@@ -144,7 +173,9 @@ function getQuartileField(modelKey) {
     ? "poverty_quartile_catboost"
     : modelKey === "rf"
     ? "poverty_quartile_rf"
-    : "poverty_quartile_cnn";
+    : modelKey === "cnn"
+    ? "poverty_quartile_cnn"
+    : "poverty_quartile_census";
 }
 
 const CATEGORY_ORDER = ["Not poor", "Lower-middle", "Upper-middle", "Poorest"];
@@ -176,31 +207,64 @@ function getCategoryStats(modelKey) {
   };
 }
 
-function getTop5Barangays(modelKey) {
+function getTop5Barangays(modelKey, categoryFilter = "all") {
   const geo = modelGeojson[modelKey];
   if (!geo || !Array.isArray(geo.features)) {
-    return { labels: [], values: [] };
+    return { labels: [], values: [], mode: categoryFilter === "all" ? "overall" : "category", category: categoryFilter };
   }
 
   const stats = new Map();
+  const qField = getQuartileField(modelKey);
 
   geo.features.forEach((f) => {
     const props = f.properties || {};
     const rawPct = props.poverty_pct;
     const val = Number(rawPct);
-    if (!Number.isFinite(val)) return;
     const name = props.barangay || "Unknown";
+    const label = props[qField];
 
-    const rec = stats.get(name) || { sum: 0, count: 0 };
-    rec.sum += val;
+    let rec = stats.get(name);
+    if (!rec) {
+      rec = {
+        sumPoverty: 0,
+        count: 0,
+        catCounts: {
+          "Not poor": 0,
+          "Lower-middle": 0,
+          "Upper-middle": 0,
+          Poorest: 0,
+        },
+      };
+    }
+
+    if (Number.isFinite(val)) {
+      rec.sumPoverty += val;
+    }
     rec.count += 1;
+    if (label && Object.prototype.hasOwnProperty.call(rec.catCounts, label)) {
+      rec.catCounts[label] += 1;
+    }
+
     stats.set(name, rec);
   });
 
-  const arr = Array.from(stats.entries()).map(([name, rec]) => ({
-    name,
-    value: rec.count ? rec.sum / rec.count : 0,
-  }));
+  let arr;
+
+  if (categoryFilter === "all") {
+    arr = Array.from(stats.entries()).map(([name, rec]) => ({
+      name,
+      value: rec.count ? rec.sumPoverty / rec.count : 0,
+    }));
+  } else {
+    arr = Array.from(stats.entries()).map(([name, rec]) => {
+      const total = rec.count || 1;
+      const catCount = rec.catCounts[categoryFilter] || 0;
+      return {
+        name,
+        value: (catCount / total) * 100,
+      };
+    });
+  }
 
   arr.sort((a, b) => b.value - a.value);
   const top5 = arr.slice(0, 5);
@@ -208,7 +272,140 @@ function getTop5Barangays(modelKey) {
   return {
     labels: top5.map((d) => d.name),
     values: top5.map((d) => Number(d.value.toFixed(1))),
+    mode: categoryFilter === "all" ? "overall" : "category",
+    category: categoryFilter,
   };
+}
+
+function updateCharts(modelKey) {
+  if (typeof Chart === "undefined") return;
+
+  // Category distribution pie chart
+  if (pieCanvas) {
+    const stats = getCategoryStats(modelKey);
+    const total = stats.counts.reduce((sum, v) => sum + v, 0);
+
+    if (pieChart) {
+      pieChart.destroy();
+      pieChart = null;
+    }
+
+    const ctxPie = pieCanvas.getContext("2d");
+    const colors = stats.labels.map((l) => getQuartileColor(l));
+
+    pieChart = new Chart(ctxPie, {
+      type: "doughnut",
+      data: {
+        labels: stats.labels,
+        datasets: [
+          {
+            data: stats.counts,
+            backgroundColor: colors,
+            borderWidth: 0,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: {
+              boxWidth: 10,
+              font: { size: 10 },
+            },
+          },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const label = ctx.label || "";
+                const val = ctx.parsed;
+                const pct = total ? (val / total) * 100 : 0;
+                return `${label}: ${val.toLocaleString()} tiles (${pct.toFixed(1)}%)`;
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Text summary with per-category tiles and percentages
+    if (pieSummaryEl) {
+      if (!total) {
+        pieSummaryEl.textContent = "No tiles available for this model.";
+      } else {
+        const lines = stats.labels.map((label, idx) => {
+          const count = stats.counts[idx] || 0;
+          const pct = total ? (count / total) * 100 : 0;
+          return `<div>${label}: <span class="font-semibold">${count.toLocaleString()}</span> tiles (${pct.toFixed(1)}%)</div>`;
+        });
+        pieSummaryEl.innerHTML = [
+          `<div class="font-semibold mb-1">${total.toLocaleString()} tiles total</div>`,
+          ...lines,
+        ].join("");
+      }
+    }
+  }
+
+  // Top 5 barangays bar chart
+  if (barCanvas) {
+    const categoryFilter = top5CategoryFilter ? top5CategoryFilter.value || "all" : "all";
+    const top5 = getTop5Barangays(modelKey, categoryFilter);
+
+    if (barChart) {
+      barChart.destroy();
+      barChart = null;
+    }
+
+    const ctxBar = barCanvas.getContext("2d");
+    const barColor = top5.mode === "overall" ? "#0ea5e9" : getQuartileColor(top5.category);
+
+    barChart = new Chart(ctxBar, {
+      type: "bar",
+      data: {
+        labels: top5.labels,
+        datasets: [
+          {
+            data: top5.values,
+            backgroundColor: barColor,
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            grid: { color: "#1e293b" },
+          },
+          x: {
+            ticks: {
+              color: "#cbd5f5",
+              font: { size: 9 },
+            },
+            grid: { display: false },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const val = ctx.parsed.y;
+                if (top5.mode === "overall") {
+                  return `${val.toFixed(1)}% average predicted poverty`;
+                }
+                return `${val.toFixed(1)}% of tiles in ${top5.category} category`;
+              },
+            },
+          },
+        },
+      },
+    });
+  }
 }
 
 function getBarangayCategoryStats(modelKey, barangayName) {
@@ -361,55 +558,58 @@ function updateBarangayTilesChart(modelKey, barangayName) {
   }
 }
 
-function updateCharts(modelKey) {
-  if (!pieCanvas || !barCanvas || typeof Chart === "undefined") return;
+function updateBarangayFactorsChart(selectedName) {
+  if (!statsBarangayFactorsCanvas || typeof Chart === "undefined") return;
+  if (!latestStatistics || !latestStatistics.barangay_factors) return;
 
-  const catStats = getCategoryStats(modelKey);
-  const top5 = getTop5Barangays(modelKey);
+  const name = (selectedName || "").toString().trim();
+  if (!name) {
+    if (statsBarangayFactorsChart) {
+      statsBarangayFactorsChart.destroy();
+      statsBarangayFactorsChart = null;
+    }
+    return;
+  }
 
-  if (pieChart) pieChart.destroy();
-  pieChart = new Chart(pieCanvas.getContext("2d"), {
-    type: "pie",
-    data: {
-      labels: catStats.labels,
-      datasets: [
-        {
-          data: catStats.counts,
-          backgroundColor: catStats.labels.map((label) => getQuartileColor(label)),
-          borderWidth: 0,
-        },
-      ],
-    },
-    options: {
-      plugins: {
-        legend: {
-          display: false,
-        },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => {
-              const dataArr = ctx.dataset.data || [];
-              const total = dataArr.reduce((a, b) => a + b, 0) || 1;
-              const count = ctx.parsed || 0;
-              const pct = (count / total) * 100;
-              return `${ctx.label}: ${count} cells (${pct.toFixed(1)}%)`;
-            },
-          },
-        },
-      },
-    },
-  });
+  const rec = latestStatistics.barangay_factors[name];
+  if (!rec) {
+    if (statsBarangayFactorsChart) {
+      statsBarangayFactorsChart.destroy();
+      statsBarangayFactorsChart = null;
+    }
+    return;
+  }
 
-  if (barChart) barChart.destroy();
-  barChart = new Chart(barCanvas.getContext("2d"), {
+  const labels = [
+    "Poor households",
+    "Poor children not attending",
+    "Households using unsafe water",
+    "Poor workers in vulnerable jobs",
+  ];
+
+  const rawValues = [
+    rec.poverty_households_pct,
+    rec.children_not_attending_pct,
+    rec.unsafe_water_households_pct,
+    rec.vulnerable_jobs_pct,
+  ];
+
+  const dataValues = rawValues.map((v) =>
+    v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v),
+  );
+
+  if (statsBarangayFactorsChart) statsBarangayFactorsChart.destroy();
+
+  const ctx = statsBarangayFactorsCanvas.getContext("2d");
+  statsBarangayFactorsChart = new Chart(ctx, {
     type: "bar",
     data: {
-      labels: top5.labels,
+      labels,
       datasets: [
         {
-          data: top5.values,
-          backgroundColor: "#ef4444",
-          borderRadius: 4,
+          data: dataValues,
+          backgroundColor: ["#ef4444", "#eab308", "#0ea5e9", "#a855f7"],
+          borderRadius: 6,
         },
       ],
     },
@@ -419,34 +619,71 @@ function updateCharts(modelKey) {
       scales: {
         y: {
           beginAtZero: true,
+          max: 100,
+          grid: { color: "#1e293b" },
           ticks: {
             callback: (val) => `${val}%`,
-          },
-          grid: {
-            color: "#1e293b",
           },
         },
         x: {
           ticks: {
             color: "#cbd5f5",
-            maxRotation: 45,
-            minRotation: 0,
-            font: {
-              size: 10,
-            },
+            font: { size: 9 },
           },
-          grid: {
-            display: false,
-          },
+          grid: { display: false },
         },
       },
       plugins: {
-        legend: {
-          display: false,
-        },
+        legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (ctx) => `${ctx.parsed.y.toFixed(1)}%`,
+            label: (ctx) => {
+              const idx = ctx.dataIndex;
+              const val = ctx.parsed.y;
+              if (val === null || val === undefined || Number.isNaN(val)) {
+                return `${labels[idx]}: no data`;
+              }
+
+              const base = `${val.toFixed(1)}%`;
+
+              if (idx === 0) {
+                const hh = rec.poor_households;
+                const totalHh = rec.total_households;
+                if (hh != null && totalHh != null) {
+                  return `${labels[idx]}: ${base} of households (${hh.toLocaleString()} of ${totalHh.toLocaleString()})`;
+                }
+                return `${labels[idx]}: ${base} of households`;
+              }
+
+              if (idx === 1) {
+                const notAtt = rec.children_not_attending;
+                const totalChildren = rec.total_poor_children;
+                if (notAtt != null && totalChildren != null) {
+                  return `${labels[idx]}: ${base} of poor children (${notAtt.toLocaleString()} of ${totalChildren.toLocaleString()})`;
+                }
+                return `${labels[idx]}: ${base} of poor children`;
+              }
+
+              if (idx === 2) {
+                const unsafe = rec.unsafe_water_households;
+                const totalWs = rec.total_water_households;
+                if (unsafe != null && totalWs != null) {
+                  return `${labels[idx]}: ${base} of water-using households (${unsafe.toLocaleString()} of ${totalWs.toLocaleString()})`;
+                }
+                return `${labels[idx]}: ${base} of water-using households`;
+              }
+
+              if (idx === 3) {
+                const vuln = rec.vulnerable_jobs_employed;
+                const totalEmp = rec.total_poor_employed;
+                if (vuln != null && totalEmp != null) {
+                  return `${labels[idx]}: ${base} of poor workers (${vuln.toLocaleString()} of ${totalEmp.toLocaleString()})`;
+                }
+                return `${labels[idx]}: ${base} of poor workers`;
+              }
+
+              return `${labels[idx]}: ${base}`;
+            },
           },
         },
       },
@@ -479,7 +716,9 @@ function createModelLayer(modelKey, geojson) {
           ? "CatBoost"
           : modelKey === "rf"
           ? "Random Forest"
-          : "CNN";
+          : modelKey === "cnn"
+          ? "CNN"
+          : "Census Poverty";
 
       const html = `
         <div class="text-xs" style="color: #ffffff;">
@@ -525,6 +764,52 @@ function createModelLayer(modelKey, geojson) {
   return layer;
 }
 
+function createCensusPovertyLayer(geojson) {
+  const layer = L.geoJSON(geojson, {
+    style: function (feature) {
+      const label = feature.properties?.poverty_quartile_census;
+      const color = getQuartileColor(label);
+      return {
+        color: "#020617",
+        weight: 1,
+        opacity: 0.7,
+        fillColor: color,
+        fillOpacity: 0.35,
+      };
+    },
+    onEachFeature: function (feature, featureLayer) {
+      const props = feature.properties || {};
+      const brgy = props.barangay || "Unknown";
+      const totalHh = props.total_households ?? "N/A";
+      const poorHh = props.poor_households ?? "N/A";
+      const mag = props.poverty_magnitude;
+      const magPct =
+        mag === null || mag === undefined || Number.isNaN(Number(mag))
+          ? "N/A"
+          : `${(Number(mag) * 100).toFixed(1)}%`;
+
+      const html = `
+        <div class="text-xs" style="color: #ffffff;">
+          <div class="font-semibold mb-1" style="color: #ffffff;">Census poverty (households)</div>
+          <div style="color: #ffffff;"><span style="color: #cbd5e1;">Barangay:</span> ${brgy}</div>
+          <div style="color: #ffffff;"><span style="color: #cbd5e1;">Total households:</span> ${totalHh}</div>
+          <div style="color: #ffffff;"><span style="color: #cbd5e1;">Poor households:</span> ${poorHh}</div>
+          <div style="color: #ffffff;"><span style="color: #cbd5e1;">Poverty magnitude:</span> ${magPct}</div>
+        </div>
+      `;
+
+      featureLayer.bindTooltip(html, {
+        sticky: true,
+        opacity: 0.95,
+        direction: "top",
+        className: "bg-slate-900/90 border border-slate-600 rounded-md px-3 py-2 shadow-md",
+      });
+    },
+  });
+
+  return layer;
+}
+
 function activateModel(modelKey) {
   Object.entries(modelLayers).forEach(([key, layer]) => {
     if (!layer) return;
@@ -540,8 +825,15 @@ function activateModel(modelKey) {
 
   if (legendModelNameEl) {
     legendModelNameEl.textContent =
-      modelKey === "catboost" ? "CatBoost" : modelKey === "rf" ? "Random Forest" : "CNN";
+      modelKey === "catboost"
+        ? "CatBoost"
+        : modelKey === "rf"
+        ? "Random Forest"
+        : modelKey === "cnn"
+        ? "CNN"
+        : "Census Poverty";
   }
+  updateLegend(modelKey);
 
   toggleButtons.forEach((btn) => {
     const key = btn.getAttribute("data-model");
@@ -556,11 +848,7 @@ function activateModel(modelKey) {
 
   setStatus(
     `Showing ${
-      modelKey === "catboost"
-        ? "CatBoost"
-        : modelKey === "rf"
-        ? "Random Forest"
-        : "CNN"
+      modelKey === "catboost" ? "CatBoost" : modelKey === "rf" ? "Random Forest" : "CNN"
     } predictions • Hover a grid to see barangay and poverty details`,
   );
 
@@ -689,6 +977,7 @@ function setupBarangaySearch() {
 
   const runSearch = () => {
     const term = brgySearchInput.value.trim();
+
     if (!term) {
       if (brgySearchStatus) {
         brgySearchStatus.textContent = "Enter a barangay name to search.";
@@ -720,6 +1009,399 @@ function setupBarangaySearch() {
       runSearch();
     }
   });
+
+  if (brgyDropdown) {
+    brgyDropdown.addEventListener("change", () => {
+      const value = brgyDropdown.value;
+      if (value) {
+        brgySearchInput.value = value;
+        runSearch();
+      }
+    });
+  }
+}
+
+function setupTop5CategoryFilter() {
+  if (!top5CategoryFilter) return;
+
+  top5CategoryFilter.addEventListener("change", () => {
+    updateCharts(activeModel);
+  });
+}
+
+function getAllBarangayNamesFromBoundary() {
+  if (!boundaryGeojson || !Array.isArray(boundaryGeojson.features)) return [];
+
+  const seen = new Set();
+  const names = [];
+
+  boundaryGeojson.features.forEach((f) => {
+    const props = f.properties || {};
+    const rawName = props.barangay || props.adm4_en;
+    if (!rawName) return;
+    const name = rawName.toString().trim();
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  });
+
+  names.sort((a, b) => a.localeCompare(b));
+  return names;
+}
+
+function populateBarangayDropdown() {
+  if (!brgyDropdown) return;
+
+  const names = getAllBarangayNamesFromBoundary();
+  brgyDropdown.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Select barangay...";
+  brgyDropdown.appendChild(placeholder);
+
+  names.forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    brgyDropdown.appendChild(opt);
+  });
+}
+
+function setActiveTab(tab) {
+  if (!geospatialPanel || !statisticsPanel || !geospatialTabBtn || !statisticsTabBtn) return;
+
+  const isGeo = tab === "geospatial";
+
+  geospatialPanel.classList.toggle("hidden", !isGeo);
+  statisticsPanel.classList.toggle("hidden", isGeo);
+
+  if (isGeo) {
+    geospatialTabBtn.classList.add("text-slate-100", "border-emerald-500");
+    geospatialTabBtn.classList.remove("text-slate-400", "border-transparent");
+    statisticsTabBtn.classList.add("text-slate-400", "border-transparent");
+    statisticsTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+  } else {
+    statisticsTabBtn.classList.add("text-slate-100", "border-emerald-500");
+    statisticsTabBtn.classList.remove("text-slate-400", "border-transparent");
+    geospatialTabBtn.classList.add("text-slate-400", "border-transparent");
+    geospatialTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+  }
+}
+
+function setupTabs() {
+  if (!geospatialTabBtn || !statisticsTabBtn || !geospatialPanel || !statisticsPanel) return;
+
+  setActiveTab("geospatial");
+
+  geospatialTabBtn.addEventListener("click", () => setActiveTab("geospatial"));
+  statisticsTabBtn.addEventListener("click", () => setActiveTab("statistics"));
+}
+
+function renderStatisticsCharts(stats) {
+  if (!stats || typeof Chart === "undefined") return;
+
+  latestStatistics = stats;
+
+  // Top barangays by census poverty (bar chart)
+  if (statsTopHhCanvas && stats.top_poverty_households) {
+    const s = stats.top_poverty_households;
+    if (statsTopHhChart) statsTopHhChart.destroy();
+    statsTopHhChart = new Chart(statsTopHhCanvas.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: s.barangays,
+        datasets: [
+          {
+            label: "% of households that are poor",
+            data: s.poverty_magnitude.map((v) => Number((v * 100).toFixed(1))),
+            backgroundColor: "#ef4444",
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {
+              callback: (val) => `${val}%`,
+            },
+            grid: {
+              color: "#1e293b",
+            },
+          },
+          x: {
+            ticks: {
+              color: "#cbd5f5",
+              maxRotation: 45,
+              minRotation: 0,
+              font: { size: 10 },
+            },
+            grid: { display: false },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const i = ctx.dataIndex;
+                const hh = s.total_households?.[i];
+                const poor = s.poor_households?.[i];
+                const pct = ctx.parsed.y;
+                if (hh != null && poor != null) {
+                  return `${pct.toFixed(1)}% of ${hh} households poor (${poor} households)`;
+                }
+                return `${pct.toFixed(1)}% of households poor`;
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // Poor children attending vs not attending (doughnut)
+  if (statsChildrenCanvas && stats.poor_children_attendance) {
+    const c = stats.poor_children_attendance;
+    if (statsChildrenChart) statsChildrenChart.destroy();
+    statsChildrenChart = new Chart(statsChildrenCanvas.getContext("2d"), {
+      type: "doughnut",
+      data: {
+        labels: ["Attending school", "Not attending"],
+        datasets: [
+          {
+            data: [c.attending, c.not_attending],
+            backgroundColor: ["#22c55e", "#ef4444"],
+          },
+        ],
+      },
+      options: {
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { size: 10 } },
+          },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const total = (c.attending || 0) + (c.not_attending || 0);
+                const val = ctx.parsed;
+                const pct = total ? (val / total) * 100 : 0;
+                return `${ctx.label}: ${val.toLocaleString()} children (${pct.toFixed(1)}%)`;
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // Top barangays contributing to poor children not attending school (bar)
+  if (
+    statsChildrenTopNonAttendCanvas &&
+    stats.top_poor_children_not_attending &&
+    stats.poor_children_attendance
+  ) {
+    const t = stats.top_poor_children_not_attending;
+    const totalCityNotAttending =
+      stats.poor_children_attendance.not_attending || 0;
+
+    if (statsChildrenTopNonAttendChart)
+      statsChildrenTopNonAttendChart.destroy();
+
+    statsChildrenTopNonAttendChart = new Chart(
+      statsChildrenTopNonAttendCanvas.getContext("2d"),
+      {
+        type: "bar",
+        data: {
+          labels: t.barangays,
+          datasets: [
+            {
+              data: t.not_attending,
+              backgroundColor: "#ef4444",
+              borderRadius: 4,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              beginAtZero: true,
+              grid: { color: "#1e293b" },
+            },
+            x: {
+              ticks: {
+                color: "#cbd5f5",
+                maxRotation: 45,
+                minRotation: 0,
+                font: { size: 9 },
+              },
+              grid: { display: false },
+            },
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const i = ctx.dataIndex;
+                  const val = ctx.parsed.y;
+                  const brgyTotal = t.total_children?.[i] || 0;
+                  const shareCity = totalCityNotAttending
+                    ? (val / totalCityNotAttending) * 100
+                    : 0;
+                  const shareBrgy = brgyTotal
+                    ? (val / brgyTotal) * 100
+                    : 0;
+                  const base = `${val.toLocaleString()} children not attending`;
+                  if (!brgyTotal && !totalCityNotAttending) return base;
+                  if (brgyTotal && totalCityNotAttending) {
+                    return `${base} (${shareBrgy.toFixed(
+                      1,
+                    )}% of poor children in barangay, ${shareCity.toFixed(
+                      1,
+                    )}% of city non-attending)`;
+                  }
+                  if (brgyTotal) {
+                    return `${base} (${shareBrgy.toFixed(
+                      1,
+                    )}% of poor children in barangay)`;
+                  }
+                  return `${base} (${shareCity.toFixed(
+                    1,
+                  )}% of city non-attending)`;
+                },
+              },
+            },
+          },
+        },
+      },
+    );
+  }
+
+  // Water source composition (stacked bar or simple bar)
+  if (statsWaterCanvas && stats.water_source) {
+    const w = stats.water_source;
+    if (statsWaterChart) statsWaterChart.destroy();
+    statsWaterChart = new Chart(statsWaterCanvas.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: w.labels,
+        datasets: [
+          {
+            data: w.counts,
+            backgroundColor: [
+              "#22c55e",
+              "#f97316",
+              "#0ea5e9",
+              "#a855f7",
+              "#64748b",
+            ],
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            grid: { color: "#1e293b" },
+          },
+          x: {
+            ticks: { color: "#cbd5f5", font: { size: 9 } },
+            grid: { display: false },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.parsed.y.toLocaleString()} households`,
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // Employment profile of poor workers (horizontal bar)
+  if (statsEmploymentCanvas && stats.poor_employment_occupation) {
+    const e = stats.poor_employment_occupation;
+    if (statsEmploymentChart) statsEmploymentChart.destroy();
+    statsEmploymentChart = new Chart(statsEmploymentCanvas.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: e.labels,
+        datasets: [
+          {
+            data: e.counts,
+            backgroundColor: "#0ea5e9",
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            beginAtZero: true,
+            grid: { color: "#1e293b" },
+          },
+          y: {
+            ticks: { color: "#cbd5f5", font: { size: 9 } },
+            grid: { display: false },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.parsed.x.toLocaleString()} workers`,
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // Barangay factors (per-barangay profile)
+  if (
+    barangayFactorsSelect &&
+    statsBarangayFactorsCanvas &&
+    latestStatistics &&
+    latestStatistics.barangay_list &&
+    latestStatistics.barangay_factors
+  ) {
+    // Populate dropdown
+    barangayFactorsSelect.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select barangay...";
+    barangayFactorsSelect.appendChild(placeholder);
+
+    latestStatistics.barangay_list.forEach((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      barangayFactorsSelect.appendChild(opt);
+    });
+
+    barangayFactorsSelect.addEventListener("change", () => {
+      const value = barangayFactorsSelect.value;
+      updateBarangayFactorsChart(value);
+    });
+  }
 }
 
 async function downloadMapImage() {
@@ -808,6 +1490,9 @@ async function loadPredictions() {
       throw new Error(`Request failed with status ${res.status}`);
     }
     const data = await res.json();
+    if (data.quartileRanges) {
+      quartileRanges = data.quartileRanges;
+    }
 
     if (data.boundary) {
       boundaryGeojson = data.boundary;
@@ -824,6 +1509,7 @@ async function loadPredictions() {
       } catch (e) {
         console.error("Error fitting bounds:", e);
       }
+      populateBarangayDropdown();
     }
 
     if (data.barangayLabels) {
@@ -865,6 +1551,11 @@ async function loadPredictions() {
       }
     }
 
+    if (data.censusPoverty) {
+      censusPovertyGeojson = data.censusPoverty;
+      // Layer will be created lazily when the toggle is used
+    }
+
     const initialModel = modelLayers.catboost
       ? "catboost"
       : modelLayers.rf
@@ -884,13 +1575,6 @@ async function loadPredictions() {
     setupBarangayLayerToggles();
     setupBarangaySearch();
 
-    if (refreshBtn) {
-      refreshBtn.addEventListener("click", refreshPredictions);
-    }
-    if (downloadMapBtn) {
-      downloadMapBtn.addEventListener("click", downloadMapImage);
-    }
-
     console.log("All setup complete!");
   } catch (err) {
     console.error("Error loading predictions:", err);
@@ -898,4 +1582,36 @@ async function loadPredictions() {
   }
 }
 
+setupTabs();
 loadPredictions();
+
+// Load statistics for the Statistics tab
+(async function loadStatistics() {
+  try {
+    const res = await fetch("/api/statistics");
+    if (!res.ok) return;
+    const stats = await res.json();
+    renderStatisticsCharts(stats);
+  } catch (e) {
+    console.error("Failed to load statistics", e);
+  }
+})();
+
+if (censusToggle) {
+  censusToggle.addEventListener("change", (e) => {
+    if (!censusPovertyGeojson) return;
+
+    if (!modelLayers.census && censusPovertyGeojson) {
+      modelLayers.census = createCensusPovertyLayer(censusPovertyGeojson);
+    }
+
+    const layer = modelLayers.census;
+    if (!layer) return;
+
+    if (e.target.checked) {
+      layer.addTo(map);
+    } else if (map.hasLayer(layer)) {
+      map.removeLayer(layer);
+    }
+  });
+}
