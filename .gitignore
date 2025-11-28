@@ -29,6 +29,7 @@ venv/
 env/
 ENV/
 mapping/
+pm_webapp/
 
 # IDE
 .idea/

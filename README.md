@@ -126,3 +126,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Google Earth Engine for satellite imagery
 - OpenStreetMap for base map data
 - Various open-source Python libraries
+
+## Temporary UI changes
+
+- **Public feedback box:** The landing page feedback/recommendation box (`static/landing.html` `#report-section`) has been commented out temporarily to pause public submissions while incoming messages are validated and processed. The markup is preserved in HTML comments so it can be re-enabled later.
+- **Admin "People" tab:** The admin UI people tab and panel (`static/index.html` `#tab-people` and `#panel-people`) have been commented out to remove access to stored messages until review is complete. The markup remains in the files and can be restored when ready.
+
+If you want these features re-enabled, remove the surrounding HTML comment markers (`<!--` / `-->`) in the respective files.
