@@ -2,10 +2,23 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
+import re
+import sqlite3
 
 import pandas as pd
 import geopandas as gpd
-from flask import Flask, jsonify, send_from_directory
+from flask import (
+    Flask,
+    jsonify,
+    send_from_directory,
+    redirect,
+    url_for,
+    session,
+    request,
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = ROOT / "static"
@@ -25,12 +38,154 @@ WATER_SOURCE_PATH = CSV_DIR / "Water Source.clean.csv"
 EDU_ATTAIN_PATH = CSV_DIR / "Educational Attainment.clean.csv"
 POOR_EMPLOYED_PATH = CSV_DIR / "Total Number of Poor Employed _.clean.csv"
 
+USERS_DB_PATH = DATA_DIR / "users.db"
+
+load_dotenv()
+
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-change-me")
+
+
+def _get_db_connection() -> sqlite3.Connection:
+    USERS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(USERS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_users_db() -> None:
+    conn = _get_db_connection()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS public_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                barangay TEXT,
+                message TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+_init_users_db()
+
+
+def _get_current_user() -> dict | None:
+    username = session.get("username")
+    if not username:
+        return None
+    return {"username": username}
+
+
+def _is_valid_email(value: str) -> bool:
+    if not value:
+        return False
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value))
 
 
 @app.route("/")
-def index() -> object:  # pragma: no cover
+def landing() -> object:  # pragma: no cover
+    return send_from_directory(app.static_folder, "landing.html")
+
+
+@app.route("/admin")
+def admin() -> object:  # pragma: no cover
+    if _get_current_user() is None:
+        return redirect(url_for("login"))
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/login")
+def login() -> object:  # pragma: no cover
+    return send_from_directory(app.static_folder, "login.html")
+
+
+@app.route("/auth/register", methods=["POST"])
+def auth_register() -> object:
+    # Only allow an authenticated admin to create new users
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+
+    if not username or not password:
+        return jsonify({"success": False, "error": "Username and password are required."}), 400
+
+    password_hash = generate_password_hash(password)
+
+    conn = _get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO users (username, password_hash)
+            VALUES (?, ?)
+            """,
+            (username, password_hash),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        return jsonify({"success": False, "error": "Username already exists."}), 400
+    finally:
+        conn.close()
+
+    # Do not change the current logged-in admin session
+    return jsonify({"success": True, "username": username}), 201
+
+
+@app.route("/auth/login", methods=["POST"])
+def auth_login() -> object:
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+
+    if not username or not password:
+        return jsonify({"success": False, "error": "Username and password are required."}), 400
+
+    conn = _get_db_connection()
+    try:
+        cur = conn.execute(
+            "SELECT username, password_hash FROM users WHERE username = ?",
+            (username,),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if row is None or not check_password_hash(row["password_hash"], password):
+        return jsonify({"success": False, "error": "Invalid credentials."}), 401
+
+    session["username"] = username
+    return redirect(url_for("admin"))
+
+
+@app.route("/logout")
+def logout() -> object:  # pragma: no cover
+    session.pop("username", None)
+    return redirect(url_for("landing"))
+
+
+@app.route("/api/me")
+def api_me() -> object:
+    user = _get_current_user()
+    if not user:
+        return jsonify({"user": None})
+    return jsonify({"user": user})
 
 
 def _detect_barangay_column(gdf: gpd.GeoDataFrame) -> str | None:
@@ -837,6 +992,80 @@ def api_statistics() -> object:
         return jsonify(data)
     except Exception as exc:  # pragma: no cover
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/feedback", methods=["POST"])
+def api_feedback_create() -> object:
+    payload = request.get_json(silent=True) or {}
+    email = (payload.get("email") or "").strip().lower()
+    message = (payload.get("message") or "").strip()
+    barangay = (payload.get("barangay") or "").strip() or None
+
+    if not _is_valid_email(email):
+        return (
+            jsonify({"success": False, "error": "Please provide a valid email address."}),
+            400,
+        )
+
+    if not message:
+        return (
+            jsonify({"success": False, "error": "Message is required."}),
+            400,
+        )
+
+    if len(message) > 4000:
+        message = message[:4000]
+
+    conn = _get_db_connection()
+    try:
+        cur = conn.execute(
+            "SELECT id FROM public_messages WHERE email = ?",
+            (email,),
+        )
+        if cur.fetchone() is not None:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "This email has already submitted a message.",
+                    }
+                ),
+                400,
+            )
+
+        conn.execute(
+            """
+            INSERT INTO public_messages (email, barangay, message)
+            VALUES (?, ?, ?)
+            """,
+            (email, barangay, message),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"success": True}), 201
+
+
+@app.route("/api/feedback", methods=["GET"])
+def api_feedback_list() -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    conn = _get_db_connection()
+    try:
+        cur = conn.execute(
+            """
+            SELECT email, barangay, message, created_at
+            FROM public_messages
+            ORDER BY created_at DESC
+            """
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    return jsonify({"success": True, "messages": rows})
 
 
 @app.route("/api/refresh", methods=["POST"])

@@ -49,6 +49,38 @@ A geospatial analysis and visualization tool for predicting and mapping poverty 
    http://localhost:8000
    ```
 
+### Web App Pages & Authentication
+
+- **Public landing page**: `http://localhost:8000/`
+  - Overview of the project and a public-facing poverty map and analytics section.
+  - Uses the same Leaflet + Chart.js visualization as the admin view, but without upload controls.
+- **Admin map view**: `http://localhost:8000/admin`
+  - Full interactive map and analytics dashboard (current build, now treated as admin side).
+  - Intended for authorized users who will manage data updates in future iterations.
+- **Login page**: `http://localhost:8000/login`
+  - Username/password login and registration for local admin accounts.
+
+Admin credentials are stored in a local SQLite database at `data/users.db` using hashed passwords
+(no plaintext passwords).
+
+### Environment Variables
+
+Create a `.env` file in the project root (same folder as `requirements-gee.txt`) with at least:
+
+```bash
+FLASK_SECRET_KEY="replace-with-a-random-secret-string"
+```
+
+The app uses `python-dotenv` to load these values on startup. `FLASK_SECRET_KEY` is required to
+secure the Flask session cookies used for admin login.
+
+### Authentication Behaviour
+
+- New admins can register via the form on `/login`.
+- Successful registration or login stores the `username` in the Flask session.
+- Access to `/admin` is restricted to authenticated sessions; unauthenticated users are
+  redirected to `/login`.
+
 ## Project Structure
 
 ```

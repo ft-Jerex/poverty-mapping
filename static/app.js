@@ -26,6 +26,7 @@ const toggleButtons = Array.from(document.querySelectorAll(".model-toggle"));
 const opacitySlider = document.getElementById("opacity-slider");
 const opacityValue = document.getElementById("opacity-value");
 const legendModelNameEl = document.getElementById("legend-model-name");
+
 const legendContainer = document.querySelector(
   '.backdrop-blur.bg-slate-900\\/75.border.border-slate-700.rounded-lg.shadow-lg.px-4.py-3.w-52.text-xs.text-slate-200.space-y-2'
 );
@@ -43,6 +44,9 @@ const geospatialTabBtn = document.getElementById("tab-geospatial");
 const statisticsTabBtn = document.getElementById("tab-statistics");
 const geospatialPanel = document.getElementById("panel-geospatial");
 const statisticsPanel = document.getElementById("panel-statistics");
+const peopleTabBtn = document.getElementById("tab-people");
+const peoplePanel = document.getElementById("panel-people");
+const peopleListContainer = document.getElementById("people-list");
 const censusToggle = document.getElementById("toggle-census-poverty");
 const statsTopHhCanvas = document.getElementById("stats-top-hh");
 const statsChildrenCanvas = document.getElementById("stats-children");
@@ -53,39 +57,25 @@ const statsWaterCanvas = document.getElementById("stats-water");
 const statsEmploymentCanvas = document.getElementById("stats-employment");
 const barangayFactorsSelect = document.getElementById("barangay-factors-select");
 const statsBarangayFactorsCanvas = document.getElementById("stats-barangay-factors");
-
-function formatRange(min, max) {
-  // Show as percent with 1 decimal
-  return `${min.toFixed(1)}% – ${max.toFixed(1)}%`;
-}
-
-function updateLegend(modelKey) {
-  if (!legendContainer || !quartileRanges[modelKey]) return;
-  const ranges = quartileRanges[modelKey];
-  // Find the legend color blocks
-  const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
-  if (legendBlocks.length !== 4) return;
-  for (let i = 0; i < 4; ++i) {
-    const range = ranges[i];
-    const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
-    if (labelSpan && range) {
-      // Update label to include value range
-      let labelText = "";
-      if (range.label === "Not poor") {
-        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Lower-middle") {
-        labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Upper-middle") {
-        labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Poorest") {
-        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
-      }
-      labelSpan.textContent = labelText;
-    }
-  }
-}
+const createUserBtn = document.getElementById("create-user-btn");
+const logoutBtn = document.getElementById("logout-btn");
 const refreshBtn = document.getElementById("refresh-btn");
 const downloadMapBtn = document.getElementById("download-map-btn");
+const resetViewBtn = document.getElementById("reset-view-btn");
+const logoutModal = document.getElementById("logout-modal");
+const logoutConfirmBtn = document.getElementById("logout-confirm-btn");
+const logoutCancelBtn = document.getElementById("logout-cancel-btn");
+const createUserModal = document.getElementById("create-user-modal");
+const createUserUsernameInput = document.getElementById("create-user-username");
+const createUserPasswordInput = document.getElementById("create-user-password");
+const createUserErrorEl = document.getElementById("create-user-error");
+const createUserCancelBtn = document.getElementById("create-user-cancel-btn");
+const createUserSubmitBtn = document.getElementById("create-user-submit-btn");
+const feedbackEmailInput = document.getElementById("feedback-email");
+const feedbackBarangayInput = document.getElementById("feedback-barangay");
+const feedbackMessageInput = document.getElementById("feedback-message");
+const feedbackStatusEl = document.getElementById("feedback-status");
+const feedbackSubmitBtn = document.getElementById("feedback-submit-btn");
 
 const modelLayers = {
   catboost: null,
@@ -121,6 +111,37 @@ let statsWaterChart = null;
 let statsEmploymentChart = null;
 let statsBarangayFactorsChart = null;
 let latestStatistics = null;
+
+function formatRange(min, max) {
+  // Show as percent with 1 decimal
+  return `${min.toFixed(1)}% – ${max.toFixed(1)}%`;
+}
+
+function updateLegend(modelKey) {
+  if (!legendContainer || !quartileRanges[modelKey]) return;
+  const ranges = quartileRanges[modelKey];
+  // Find the legend color blocks
+  const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
+  if (legendBlocks.length !== 4) return;
+  for (let i = 0; i < 4; ++i) {
+    const range = ranges[i];
+    const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
+    if (labelSpan && range) {
+      // Update label to include value range
+      let labelText = "";
+      if (range.label === "Not poor") {
+        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Lower-middle") {
+        labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Upper-middle") {
+        labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Poorest") {
+        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
+      }
+      labelSpan.textContent = labelText;
+    }
+  }
+}
 
 function setStatus(text, tone = "info") {
   if (!statusEl) return;
@@ -1088,20 +1109,47 @@ function setActiveTab(tab) {
   if (!geospatialPanel || !statisticsPanel || !geospatialTabBtn || !statisticsTabBtn) return;
 
   const isGeo = tab === "geospatial";
+  const isStats = tab === "statistics";
+  const isPeople = tab === "people";
 
   geospatialPanel.classList.toggle("hidden", !isGeo);
-  statisticsPanel.classList.toggle("hidden", isGeo);
+  statisticsPanel.classList.toggle("hidden", !isStats);
+  if (peoplePanel) {
+    peoplePanel.classList.toggle("hidden", !isPeople);
+  }
 
-  if (isGeo) {
-    geospatialTabBtn.classList.add("text-slate-100", "border-emerald-500");
-    geospatialTabBtn.classList.remove("text-slate-400", "border-transparent");
-    statisticsTabBtn.classList.add("text-slate-400", "border-transparent");
-    statisticsTabBtn.classList.remove("text-slate-100", "border-emerald-500");
-  } else {
-    statisticsTabBtn.classList.add("text-slate-100", "border-emerald-500");
-    statisticsTabBtn.classList.remove("text-slate-400", "border-transparent");
-    geospatialTabBtn.classList.add("text-slate-400", "border-transparent");
-    geospatialTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+  if (geospatialTabBtn) {
+    if (isGeo) {
+      geospatialTabBtn.classList.add("text-slate-100", "border-emerald-500");
+      geospatialTabBtn.classList.remove("text-slate-400", "border-transparent");
+    } else {
+      geospatialTabBtn.classList.add("text-slate-400", "border-transparent");
+      geospatialTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+    }
+  }
+
+  if (statisticsTabBtn) {
+    if (isStats) {
+      statisticsTabBtn.classList.add("text-slate-100", "border-emerald-500");
+      statisticsTabBtn.classList.remove("text-slate-400", "border-transparent");
+    } else {
+      statisticsTabBtn.classList.add("text-slate-400", "border-transparent");
+      statisticsTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+    }
+  }
+
+  if (peopleTabBtn) {
+    if (isPeople) {
+      peopleTabBtn.classList.add("text-slate-100", "border-emerald-500");
+      peopleTabBtn.classList.remove("text-slate-400", "border-transparent");
+    } else {
+      peopleTabBtn.classList.add("text-slate-400", "border-transparent");
+      peopleTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+    }
+  }
+
+  if (isPeople) {
+    fetchPeopleMessages();
   }
 }
 
@@ -1112,6 +1160,132 @@ function setupTabs() {
 
   geospatialTabBtn.addEventListener("click", () => setActiveTab("geospatial"));
   statisticsTabBtn.addEventListener("click", () => setActiveTab("statistics"));
+  if (peopleTabBtn) {
+    peopleTabBtn.addEventListener("click", () => setActiveTab("people"));
+  }
+}
+
+function setupAdminControls() {
+  if (logoutBtn && logoutModal) {
+    logoutBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      logoutModal.classList.remove("hidden");
+    });
+  }
+
+  if (logoutCancelBtn && logoutModal) {
+    logoutCancelBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      logoutModal.classList.add("hidden");
+    });
+  }
+
+  if (logoutConfirmBtn && logoutModal) {
+    logoutConfirmBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      window.location.href = "/logout";
+    });
+  }
+
+  if (createUserBtn && createUserModal) {
+    createUserBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+
+      if (createUserUsernameInput) {
+        createUserUsernameInput.value = "";
+      }
+      if (createUserPasswordInput) {
+        createUserPasswordInput.value = "";
+      }
+      if (createUserErrorEl) {
+        createUserErrorEl.textContent = "";
+        createUserErrorEl.classList.add("hidden");
+      }
+
+      createUserModal.classList.remove("hidden");
+
+      if (createUserUsernameInput) {
+        createUserUsernameInput.focus();
+      }
+    });
+  }
+
+  if (createUserCancelBtn && createUserModal) {
+    createUserCancelBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      createUserModal.classList.add("hidden");
+    });
+  }
+
+  if (createUserSubmitBtn && createUserModal) {
+    createUserSubmitBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+
+      const username = createUserUsernameInput
+        ? createUserUsernameInput.value.trim()
+        : "";
+      const password = createUserPasswordInput ? createUserPasswordInput.value : "";
+
+      if (!username || !password) {
+        if (createUserErrorEl) {
+          createUserErrorEl.textContent = "Username and password are required.";
+          createUserErrorEl.classList.remove("hidden");
+        }
+        return;
+      }
+
+      if (createUserErrorEl) {
+        createUserErrorEl.textContent = "";
+        createUserErrorEl.classList.add("hidden");
+      }
+
+      try {
+        const res = await fetch("/auth/register", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ username, password }),
+        });
+
+        let data = null;
+        try {
+          data = await res.json();
+        } catch (err) {}
+
+        if (!res.ok || !data || data.success === false) {
+          const msg = data && data.error ? data.error : `Request failed with status ${res.status}`;
+          if (createUserErrorEl) {
+            createUserErrorEl.textContent = msg;
+            createUserErrorEl.classList.remove("hidden");
+          }
+          return;
+        }
+
+        createUserModal.classList.add("hidden");
+      } catch (err) {
+        console.error("Error creating user:", err);
+        if (createUserErrorEl) {
+          createUserErrorEl.textContent = "Failed to create user. Check console for details.";
+          createUserErrorEl.classList.remove("hidden");
+        }
+      }
+    });
+  }
+
+  if (downloadMapBtn) {
+    downloadMapBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      downloadMapImage();
+    });
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      refreshPredictions();
+    });
+  }
 }
 
 function renderStatisticsCharts(stats) {
@@ -1400,6 +1574,7 @@ function renderStatisticsCharts(stats) {
   ) {
     // Populate dropdown
     barangayFactorsSelect.innerHTML = "";
+
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = "Select barangay...";
@@ -1601,7 +1776,246 @@ async function loadPredictions() {
   }
 }
 
+function smoothScrollToSelector(selector) {
+  const target = document.querySelector(selector);
+  if (!target) return;
+
+  const rect = target.getBoundingClientRect();
+  const headerOffset = 64; // approximate height of sticky nav
+  const top = window.pageYOffset + rect.top - headerOffset;
+
+  window.scrollTo({
+    top: top < 0 ? 0 : top,
+    behavior: "smooth",
+  });
+}
+
+function setupLandingPageNavigation() {
+  // Only run on landing page where hero section exists
+  const heroSection = document.getElementById("hero");
+  if (!heroSection) return;
+
+  const overviewLink = document.querySelector('a[href="#hero"]');
+  const mapLinks = Array.from(document.querySelectorAll('a[href="#map-section"]'));
+  const aboutLink = document.querySelector('a[href="#about-section"]');
+
+  const attachSmooth = (elOrList, selector) => {
+    if (!elOrList) return;
+    const list = Array.isArray(elOrList) ? elOrList : [elOrList];
+    list.forEach((el) => {
+      if (!el) return;
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        smoothScrollToSelector(selector);
+      });
+    });
+  };
+
+  attachSmooth(overviewLink, "#hero");
+  attachSmooth(mapLinks, "#map-section");
+  attachSmooth(aboutLink, "#about-section");
+}
+
+function setupLandingPageAnimations() {
+  const heroSection = document.getElementById("hero");
+  if (!heroSection) return; // not on landing page
+  const aboutSection = document.getElementById("about-section");
+
+  const sections = [heroSection];
+  if (aboutSection) sections.push(aboutSection);
+
+  if (!("IntersectionObserver" in window)) {
+    // Fallback: just make them visible
+    sections.forEach((el) => {
+      if (!el) return;
+      el.classList.remove("opacity-0", "translate-y-3", "translate-y-4");
+      el.classList.add("opacity-100", "translate-y-0");
+    });
+    return;
+  }
+
+  const observer = new IntersectionObserver(
+    (entries, obs) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const el = entry.target;
+        el.classList.remove("opacity-0", "translate-y-3", "translate-y-4");
+        el.classList.add("opacity-100", "translate-y-0");
+        obs.unobserve(el);
+      });
+    },
+    { threshold: 0.2 },
+  );
+
+  sections.forEach((el) => {
+    if (!el) return;
+    el.classList.add("opacity-0", "translate-y-3", "transition-all", "duration-700", "ease-out");
+    observer.observe(el);
+  });
+}
+
+function setupResetViewControl() {
+  if (!resetViewBtn) return;
+  resetViewBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    resetMapView();
+  });
+}
+
+function resetMapView() {
+  try {
+    if (boundaryLayer && typeof boundaryLayer.getBounds === "function") {
+      map.fitBounds(boundaryLayer.getBounds(), { padding: [20, 20] });
+      return;
+    }
+
+    if (boundaryGeojson) {
+      const tmp = L.geoJSON(boundaryGeojson);
+      map.fitBounds(tmp.getBounds(), { padding: [20, 20] });
+      map.removeLayer(tmp);
+      return;
+    }
+
+    // Fallback: approximate center of Zamboanga City
+    map.setView([6.9214, 122.079], 11);
+  } catch (e) {
+    console.error("Error resetting map view:", e);
+  }
+}
+
+function setupFeedbackForm() {
+  const heroSection = document.getElementById("hero");
+  if (!heroSection) return; // only on landing page
+
+  if (!feedbackEmailInput || !feedbackMessageInput || !feedbackSubmitBtn) return;
+
+  const validateEmail = (value) => {
+    if (!value) return false;
+    return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
+  };
+
+  const setStatus = (text, tone = "info") => {
+    if (!feedbackStatusEl) return;
+    feedbackStatusEl.textContent = text;
+    if (tone === "error") {
+      feedbackStatusEl.classList.remove("text-slate-400", "text-emerald-400");
+      feedbackStatusEl.classList.add("text-red-400");
+    } else if (tone === "success") {
+      feedbackStatusEl.classList.remove("text-slate-400", "text-red-400");
+      feedbackStatusEl.classList.add("text-emerald-400");
+    } else {
+      feedbackStatusEl.classList.remove("text-emerald-400", "text-red-400");
+      feedbackStatusEl.classList.add("text-slate-400");
+    }
+  };
+
+  feedbackSubmitBtn.addEventListener("click", async (e) => {
+    e.preventDefault();
+
+    const email = feedbackEmailInput.value.trim();
+    const barangay = feedbackBarangayInput ? feedbackBarangayInput.value.trim() : "";
+    const message = feedbackMessageInput.value.trim();
+
+    if (!validateEmail(email)) {
+      setStatus("Please enter a valid email address.", "error");
+      return;
+    }
+    if (!message) {
+      setStatus("Please enter a message.", "error");
+      return;
+    }
+
+    setStatus("Sending message…", "info");
+    feedbackSubmitBtn.disabled = true;
+
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, barangay, message }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || data.success === false) {
+        const msg = data && data.error ? data.error : `Failed to send message (status ${res.status}).`;
+        setStatus(msg, "error");
+        return;
+      }
+
+      if (feedbackEmailInput) feedbackEmailInput.value = "";
+      if (feedbackBarangayInput) feedbackBarangayInput.value = "";
+      if (feedbackMessageInput) feedbackMessageInput.value = "";
+
+      setStatus("Thank you. Your message has been received.", "success");
+    } catch (err) {
+      console.error("Error submitting feedback", err);
+      setStatus("Failed to send message. Please try again later.", "error");
+    } finally {
+      feedbackSubmitBtn.disabled = false;
+    }
+  });
+}
+
+async function fetchPeopleMessages() {
+  if (!peopleListContainer) return;
+
+  peopleListContainer.textContent = "Loading messages…";
+
+  try {
+    const res = await fetch("/api/feedback");
+    if (!res.ok) {
+      if (res.status === 403) {
+        peopleListContainer.textContent = "Sign in as an admin to view messages.";
+        return;
+      }
+      peopleListContainer.textContent = `Failed to load messages (status ${res.status}).`;
+      return;
+    }
+
+    const data = await res.json();
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+
+    if (!messages.length) {
+      peopleListContainer.textContent = "No messages submitted yet.";
+      return;
+    }
+
+    const items = messages.map((m) => {
+      const email = m.email || "Unknown email";
+      const barangay = m.barangay || "Unspecified barangay";
+      const created = m.created_at || "";
+      const body = m.message || "";
+      const esc = (str) => String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return `
+        <div class="border border-slate-800 bg-slate-900/70 rounded-xl px-3 py-2.5 shadow-sm">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="flex flex-col">
+              <span class="text-[11px] font-semibold text-slate-100">${esc(email)}</span>
+              <span class="text-[10px] text-slate-400">${esc(barangay)}</span>
+            </div>
+            <span class="text-[10px] text-slate-500 whitespace-nowrap">${esc(created)}</span>
+          </div>
+          <p class="text-[11px] text-slate-200 leading-snug whitespace-pre-wrap">${esc(body)}</p>
+        </div>
+      `;
+    });
+
+    peopleListContainer.innerHTML = items.join("");
+  } catch (err) {
+    console.error("Failed to load people messages", err);
+    peopleListContainer.textContent = "Failed to load messages.";
+  }
+}
+
 setupTabs();
+setupAdminControls();
+setupLandingPageNavigation();
+setupLandingPageAnimations();
+setupResetViewControl();
+setupFeedbackForm();
 loadPredictions();
 
 // Load statistics for the Statistics tab
