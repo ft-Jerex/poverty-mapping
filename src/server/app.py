@@ -37,6 +37,8 @@ POOR_CHILDREN_PATH = CSV_DIR / "Poor Children Attending and Not.clean.csv"
 WATER_SOURCE_PATH = CSV_DIR / "Water Source.clean.csv"
 EDU_ATTAIN_PATH = CSV_DIR / "Educational Attainment.clean.csv"
 POOR_EMPLOYED_PATH = CSV_DIR / "Total Number of Poor Employed _.clean.csv"
+SHEETS_SUMMARY_PATH = CSV_DIR / "sheets_saved_summary.csv"
+SHEETS_CONFIG_PATH = CSV_DIR / "sheets_chart_config.json"
 
 USERS_DB_PATH = DATA_DIR / "users.db"
 
@@ -108,6 +110,13 @@ def admin() -> object:  # pragma: no cover
     if _get_current_user() is None:
         return redirect(url_for("login"))
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/admin/data")
+def admin_data() -> object:  # pragma: no cover
+    if _get_current_user() is None:
+        return redirect(url_for("login"))
+    return send_from_directory(app.static_folder, "admin_data.html")
 
 
 @app.route("/login")
@@ -464,6 +473,101 @@ def get_data() -> dict:
     return _data_cache
 
 
+def _load_sheets_summary() -> pd.DataFrame:
+    if not SHEETS_SUMMARY_PATH.exists():
+        return pd.DataFrame(
+            columns=["sheet_name", "safe_name", "rows", "columns", "csv_path"]
+        )
+
+    try:
+        df = pd.read_csv(SHEETS_SUMMARY_PATH)
+    except Exception:
+        df = pd.DataFrame(
+            columns=["sheet_name", "safe_name", "rows", "columns", "csv_path"]
+        )
+
+    for col in ("rows", "columns"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    return df
+
+
+def _save_sheets_summary(df: pd.DataFrame) -> None:
+    SHEETS_SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(SHEETS_SUMMARY_PATH, index=False)
+
+
+def _slugify_sheet_name(name: str) -> str:
+    value = (name or "").strip()
+    value = re.sub(r"[^A-Za-z0-9]+", "_", value)
+    value = value.strip("_")
+    return value or "sheet"
+
+
+def _load_sheets_config() -> dict:
+    if not SHEETS_CONFIG_PATH.exists():
+        return {}
+    try:
+        with SHEETS_CONFIG_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_sheets_config(config: dict) -> None:
+    SHEETS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SHEETS_CONFIG_PATH.open("w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def _load_sheet_dataframe_from_summary(name_hint: str) -> pd.DataFrame | None:
+    summary = _load_sheets_summary()
+    if summary.empty:
+        return None
+
+    key_col = "sheet_name" if "sheet_name" in summary.columns else None
+    mask = None
+    if key_col is not None:
+        mask = (
+            summary[key_col]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            == (name_hint or "").strip().upper()
+        )
+
+    if (mask is None or not mask.any()) and "safe_name" in summary.columns:
+        slug = _slugify_sheet_name(name_hint)
+        mask = (
+            summary["safe_name"].astype(str).str.strip().str.upper() == slug.upper()
+        )
+
+    if mask is None or not mask.any():
+        return None
+
+    row = summary.loc[mask].iloc[0]
+    csv_rel = str(row.get("csv_path") or "").strip()
+    if not csv_rel:
+        return None
+
+    csv_path = ROOT / csv_rel
+    if not csv_path.exists():
+        alt = CSV_DIR / csv_rel
+        csv_path = alt if alt.exists() else csv_path
+
+    if not csv_path.exists():
+        return None
+
+    try:
+        return pd.read_csv(csv_path)
+    except Exception:
+        return None
+
+
 def _prepare_statistics() -> dict:
     stats: dict = {}
 
@@ -691,14 +795,147 @@ def _prepare_statistics() -> dict:
     stats["barangay_factors"] = barangay_factors
     stats["barangay_list"] = sorted(barangay_factors.keys())
 
+    try:
+        nature_df = _load_sheet_dataframe_from_summary("Nature of Employment")
+        if nature_df is not None and not nature_df.empty:
+            emp_cols = [
+                col
+                for col in ("Permanent", "Seasonal/ Short Term", "Weekly Basis")
+                if col in nature_df.columns
+            ]
+            if emp_cols:
+                totals = nature_df[emp_cols].sum(numeric_only=True).astype(float)
+                stats["nature_of_employment"] = {
+                    "labels": list(emp_cols),
+                    "counts": totals.tolist(),
+                }
+    except Exception:
+        pass
+
+    # Build a list of custom sheet visualizations based on admin-configured
+    # quick visualization settings for sheets that are explicitly exposed in
+    # the Statistics tab.
+    custom_sheets: list[dict] = []
+    try:
+        cfg_all = _load_sheets_config()
+        summary = _load_sheets_summary()
+        if not summary.empty and isinstance(cfg_all, dict):
+            # Normalize summary columns for joins
+            if "safe_name" not in summary.columns:
+                summary["safe_name"] = summary.get("sheet_name", "").apply(_slugify_sheet_name)
+
+            for safe_name, cfg_entry in cfg_all.items():
+                if not isinstance(cfg_entry, dict):
+                    continue
+                if not cfg_entry.get("expose_in_statistics"):
+                    continue
+
+                chart_type = (cfg_entry.get("chart_type") or "bar").strip().lower()
+                if chart_type not in {"bar", "line", "pie"}:
+                    chart_type = "bar"
+
+                x_column = (cfg_entry.get("x_column") or "").strip()
+                y_columns = cfg_entry.get("y_columns") or []
+                if not x_column or not y_columns:
+                    continue
+
+                y_column = str(y_columns[0])
+
+                row_mode = (cfg_entry.get("row_mode") or "top5").strip().lower()
+                if row_mode not in {"top5", "all", "single"}:
+                    row_mode = "top5"
+
+                sort_column = (cfg_entry.get("sort_column") or "").strip() or None
+                filter_mode = (cfg_entry.get("filter_mode") or "").strip().lower() or None
+                filter_value = (cfg_entry.get("filter_value") or "").strip() or None
+
+                # Find the sheet metadata row
+                row_mask = summary["safe_name"].astype(str) == str(safe_name)
+                if not row_mask.any():
+                    continue
+                row = summary.loc[row_mask].iloc[0]
+                csv_rel = str(row.get("csv_path") or "").strip()
+                if not csv_rel:
+                    continue
+
+                csv_path = ROOT / csv_rel
+                if not csv_path.exists():
+                    alt = CSV_DIR / csv_rel
+                    csv_path = alt if alt.exists() else csv_path
+                if not csv_path.exists():
+                    continue
+
+                try:
+                    df = pd.read_csv(csv_path)
+                except Exception:
+                    continue
+
+                if x_column not in df.columns or y_column not in df.columns:
+                    continue
+
+                # Replace NaN with None for safer JSON encoding later
+                if not df.empty:
+                    df = df.where(pd.notnull(df), None)
+
+                working = df.copy()
+                # Drop rows where X is missing or is a TOTAL row
+                x_vals = working[x_column].astype(str)
+                mask_valid = x_vals.notna() & (x_vals.str.strip().str.upper() != "TOTAL")
+                working = working.loc[mask_valid].copy()
+                if working.empty:
+                    continue
+
+                # Apply filter for single-barangay mode if configured
+                if row_mode == "single" and filter_mode == "x_equals" and filter_value:
+                    working = working.loc[
+                        working[x_column].astype(str).str.strip() == filter_value
+                    ].copy()
+                    if working.empty:
+                        continue
+
+                # For top5/all we can sort by sort_column if provided
+                if row_mode in {"top5", "all"} and sort_column and sort_column in working.columns:
+                    sort_series = pd.to_numeric(working[sort_column], errors="coerce")
+                    working = working.assign(_sort=sort_series).sort_values(
+                        by="_sort", ascending=False
+                    )
+
+                if row_mode == "top5":
+                    working = working.head(5)
+
+                if working.empty:
+                    continue
+
+                x_labels = working[x_column].astype(str).tolist()
+                y_vals = pd.to_numeric(working[y_column], errors="coerce").fillna(0.0).astype(float)
+
+                sheet_name = str(row.get("sheet_name") or safe_name)
+
+                custom_sheets.append(
+                    {
+                        "safe_name": safe_name,
+                        "sheet_name": sheet_name,
+                        "chart_type": chart_type,
+                        "x_labels": x_labels,
+                        "y_values": y_vals.tolist(),
+                        "x_column": x_column,
+                        "y_column": y_column,
+                    }
+                )
+    except Exception:
+        # Do not fail statistics entirely if custom sheets cannot be computed
+        custom_sheets = []
+
+    stats["custom_sheets"] = custom_sheets
+
     return stats
 
 
 def get_statistics() -> dict:
-    global _stats_cache
-    if _stats_cache is None:
-        _stats_cache = _prepare_statistics()
-    return _stats_cache
+    # Always recompute statistics so updates from admin-managed sheets and
+    # toggled custom charts are reflected without needing to restart the
+    # backend.
+    return _prepare_statistics()
 
 
 def _load_grid_predictions() -> tuple[dict, dict, dict]:
@@ -992,6 +1229,351 @@ def api_statistics() -> object:
         return jsonify(data)
     except Exception as exc:  # pragma: no cover
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/sheets", methods=["GET"])
+def api_sheets_list() -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    df = _load_sheets_summary()
+    records = df.to_dict(orient="records") if not df.empty else []
+    return jsonify({"success": True, "sheets": records})
+
+
+@app.route("/api/sheets/<safe_name>", methods=["GET"])
+def api_sheets_get(safe_name: str) -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    df_summary = _load_sheets_summary()
+    if df_summary.empty or "safe_name" not in df_summary.columns:
+        return jsonify({"success": False, "error": "Sheet not found"}), 404
+
+    row = df_summary.loc[df_summary["safe_name"] == safe_name]
+    if row.empty:
+        return jsonify({"success": False, "error": "Sheet not found"}), 404
+
+    row_dict = row.iloc[0].to_dict()
+    csv_rel = str(row_dict.get("csv_path") or "").strip()
+    if not csv_rel:
+        return jsonify({"success": False, "error": "Sheet has no csv_path"}), 400
+
+    csv_path = ROOT / csv_rel
+    if not csv_path.exists():
+        # Also try resolving relative to CSV_DIR for robustness
+        alt = CSV_DIR / csv_rel
+        csv_path = alt if alt.exists() else csv_path
+
+    if not csv_path.exists():
+        return jsonify({"success": False, "error": "CSV file not found"}), 404
+
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to read CSV: {exc}"}), 500
+
+    # Replace pandas NaN/NaT with None so that JSON serialization does not
+    # emit invalid NaN literals, which would cause JSON.parse to fail
+    # on the frontend when calling response.json().
+    if not df.empty:
+        df = df.where(pd.notnull(df), None)
+
+    header = list(df.columns)
+    rows = df.to_dict(orient="records")
+
+    return jsonify(
+        {
+            "success": True,
+            "sheet": row_dict,
+            "header": header,
+            "rows": rows,
+        }
+    )
+
+
+@app.route("/api/sheets", methods=["POST"])
+def api_sheets_create() -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    sheet_name = (payload.get("sheet_name") or "").strip()
+    header = payload.get("header") or []
+    rows = payload.get("rows") or []
+
+    if not sheet_name:
+        return jsonify({"success": False, "error": "sheet_name is required"}), 400
+
+    if not isinstance(header, list) or not all(isinstance(c, str) for c in header):
+        return jsonify({"success": False, "error": "header must be a list of column names"}), 400
+
+    if not isinstance(rows, list):
+        return jsonify({"success": False, "error": "rows must be a list of objects"}), 400
+
+    safe_name = _slugify_sheet_name(sheet_name)
+
+    df_summary = _load_sheets_summary()
+    if not df_summary.empty and "safe_name" in df_summary.columns:
+        if (df_summary["safe_name"] == safe_name).any():
+            return jsonify({"success": False, "error": "A sheet with a similar name already exists"}), 400
+
+    CSV_DIR.mkdir(parents=True, exist_ok=True)
+    csv_filename = f"{safe_name}.csv"
+    csv_rel = f"csv_outputs/{csv_filename}"
+    csv_path = CSV_DIR / csv_filename
+
+    try:
+        df = pd.DataFrame(rows, columns=header)
+        df.to_csv(csv_path, index=False)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to write CSV: {exc}"}), 500
+
+    rows_count = int(len(df))
+    cols_count = int(len(header))
+
+    if df_summary.empty:
+        df_summary = pd.DataFrame(
+            columns=["sheet_name", "safe_name", "rows", "columns", "csv_path"]
+        )
+
+    new_row = {
+        "sheet_name": sheet_name,
+        "safe_name": safe_name,
+        "rows": rows_count,
+        "columns": cols_count,
+        "csv_path": csv_rel,
+    }
+    df_summary = pd.concat([df_summary, pd.DataFrame([new_row])], ignore_index=True)
+    _save_sheets_summary(df_summary)
+
+    return jsonify({"success": True, "sheet": new_row}), 201
+
+
+@app.route("/api/sheets/upload", methods=["POST"])
+def api_sheets_upload() -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        return jsonify({"success": False, "error": "No file uploaded"}), 400
+
+    sheet_name = (request.form.get("sheet_name") or "").strip()
+    if not sheet_name:
+        # Derive a friendly name from the filename if not provided
+        base = Path(file.filename).name
+        sheet_name = base.rsplit(".", 1)[0] or base
+
+    safe_name = _slugify_sheet_name(sheet_name)
+
+    df_summary = _load_sheets_summary()
+    if not df_summary.empty and "safe_name" in df_summary.columns:
+        if (df_summary["safe_name"] == safe_name).any():
+            return (
+                jsonify({"success": False, "error": "A sheet with a similar name already exists"}),
+                400,
+            )
+
+    CSV_DIR.mkdir(parents=True, exist_ok=True)
+    csv_filename = f"{safe_name}.csv"
+    csv_rel = f"csv_outputs/{csv_filename}"
+    csv_path = CSV_DIR / csv_filename
+
+    try:
+        file.save(csv_path)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to save uploaded file: {exc}"}), 500
+
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to read uploaded CSV: {exc}"}), 400
+
+    rows_count = int(len(df))
+    cols_count = int(len(df.columns))
+
+    if df_summary.empty:
+        df_summary = pd.DataFrame(
+            columns=["sheet_name", "safe_name", "rows", "columns", "csv_path"]
+        )
+
+    new_row = {
+        "sheet_name": sheet_name,
+        "safe_name": safe_name,
+        "rows": rows_count,
+        "columns": cols_count,
+        "csv_path": csv_rel,
+    }
+    df_summary = pd.concat([df_summary, pd.DataFrame([new_row])], ignore_index=True)
+    _save_sheets_summary(df_summary)
+
+    return jsonify({"success": True, "sheet": new_row}), 201
+
+
+@app.route("/api/sheets/<safe_name>", methods=["PUT"])
+def api_sheets_update(safe_name: str) -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    header = payload.get("header") or []
+    rows = payload.get("rows") or []
+
+    if not isinstance(header, list) or not all(isinstance(c, str) for c in header):
+        return jsonify({"success": False, "error": "header must be a list of column names"}), 400
+
+    if not isinstance(rows, list):
+        return jsonify({"success": False, "error": "rows must be a list of objects"}), 400
+
+    df_summary = _load_sheets_summary()
+    if df_summary.empty or "safe_name" not in df_summary.columns:
+        return jsonify({"success": False, "error": "Sheet not found"}), 404
+
+    mask = df_summary["safe_name"] == safe_name
+    if not mask.any():
+        return jsonify({"success": False, "error": "Sheet not found"}), 404
+
+    row = df_summary.loc[mask].iloc[0]
+    csv_rel = str(row.get("csv_path") or "").strip()
+    if not csv_rel:
+        return jsonify({"success": False, "error": "Sheet has no csv_path"}), 400
+
+    csv_path = ROOT / csv_rel
+    if not csv_path.exists():
+        alt = CSV_DIR / csv_rel
+        csv_path = alt if alt.exists() else csv_path
+
+    try:
+        df = pd.DataFrame(rows, columns=header)
+        CSV_DIR.mkdir(parents=True, exist_ok=True)
+        df.to_csv(csv_path, index=False)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to write CSV: {exc}"}), 500
+
+    df_summary.loc[mask, "rows"] = int(len(df))
+    df_summary.loc[mask, "columns"] = int(len(header))
+    _save_sheets_summary(df_summary)
+
+    return jsonify({"success": True})
+
+
+@app.route("/api/sheets/<safe_name>", methods=["DELETE"])
+def api_sheets_delete(safe_name: str) -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    df_summary = _load_sheets_summary()
+    if df_summary.empty or "safe_name" not in df_summary.columns:
+        return jsonify({"success": False, "error": "Sheet not found"}), 404
+
+    mask = df_summary["safe_name"] == safe_name
+    if not mask.any():
+        return jsonify({"success": False, "error": "Sheet not found"}), 404
+
+    row = df_summary.loc[mask].iloc[0]
+    csv_rel = str(row.get("csv_path") or "").strip()
+    csv_path = None
+    if csv_rel:
+        candidate = ROOT / csv_rel
+        if candidate.exists():
+            csv_path = candidate
+        else:
+            alt = CSV_DIR / csv_rel
+            if alt.exists():
+                csv_path = alt
+
+    if csv_path is not None and csv_path.exists():
+        try:
+            csv_path.unlink()
+        except Exception:
+            # Non-fatal: we can still remove from summary
+            pass
+
+    df_summary = df_summary.loc[~mask].copy()
+    if not df_summary.empty:
+        df_summary = df_summary.reset_index(drop=True)
+    _save_sheets_summary(df_summary)
+
+    cfg = _load_sheets_config()
+    if safe_name in cfg:
+        cfg.pop(safe_name, None)
+        _save_sheets_config(cfg)
+
+    return jsonify({"success": True})
+
+
+@app.route("/api/sheets/<safe_name>/config", methods=["GET"])
+def api_sheets_get_config(safe_name: str) -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    cfg = _load_sheets_config()
+    entry = cfg.get(safe_name) or {}
+    return jsonify({"success": True, "config": entry})
+
+
+@app.route("/api/sheets/<safe_name>/config", methods=["PUT"])
+def api_sheets_update_config(safe_name: str) -> object:
+    if _get_current_user() is None:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    chart_type = (payload.get("chart_type") or "bar").strip().lower()
+    x_column = (payload.get("x_column") or "").strip()
+    y_columns = payload.get("y_columns") or []
+
+    if not isinstance(y_columns, list):
+        return jsonify({"success": False, "error": "y_columns must be a list"}), 400
+
+    # Optional extra configuration used by quick visualization and statistics wiring
+    row_mode_raw = (payload.get("row_mode") or "").strip().lower()
+    row_mode = row_mode_raw if row_mode_raw in {"top5", "all", "single"} else None
+    sort_column = (payload.get("sort_column") or "").strip() or None
+    filter_value = (payload.get("filter_value") or "").strip() or None
+    filter_mode = (payload.get("filter_mode") or "").strip() or None
+
+    expose_flag_present = "expose_in_statistics" in payload
+    expose_in_statistics = bool(payload.get("expose_in_statistics")) if expose_flag_present else None
+
+    allowed_types = {"bar", "line", "pie"}
+    if chart_type not in allowed_types:
+        chart_type = "bar"
+
+    cfg = _load_sheets_config()
+
+    if not x_column or not y_columns:
+        # Clear config for this sheet if no meaningful selection
+        if safe_name in cfg:
+            cfg.pop(safe_name, None)
+            _save_sheets_config(cfg)
+        return jsonify({"success": True, "config": {}})
+
+    entry: dict[str, object] = {
+        "chart_type": chart_type,
+        "x_column": x_column,
+        "y_columns": [str(col) for col in y_columns],
+    }
+
+    if row_mode is not None:
+        entry["row_mode"] = row_mode
+    if sort_column is not None:
+        entry["sort_column"] = sort_column
+    if filter_value is not None:
+        entry["filter_value"] = filter_value
+    if filter_mode is not None:
+        entry["filter_mode"] = filter_mode
+
+    prev = cfg.get(safe_name) or {}
+    if expose_flag_present:
+        entry["expose_in_statistics"] = expose_in_statistics
+    elif isinstance(prev, dict) and "expose_in_statistics" in prev:
+        entry["expose_in_statistics"] = bool(prev.get("expose_in_statistics"))
+
+    cfg[safe_name] = entry
+    _save_sheets_config(cfg)
+
+    return jsonify({"success": True, "config": cfg[safe_name]})
 
 
 @app.route("/api/feedback", methods=["POST"])

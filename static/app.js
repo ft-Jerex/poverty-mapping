@@ -57,6 +57,9 @@ const statsWaterCanvas = document.getElementById("stats-water");
 const statsEmploymentCanvas = document.getElementById("stats-employment");
 const barangayFactorsSelect = document.getElementById("barangay-factors-select");
 const statsBarangayFactorsCanvas = document.getElementById("stats-barangay-factors");
+const statsCustomSection = document.getElementById("stats-custom-section");
+const statsCustomContainer = document.getElementById("stats-custom-sheets");
+
 const createUserBtn = document.getElementById("create-user-btn");
 const logoutBtn = document.getElementById("logout-btn");
 const refreshBtn = document.getElementById("refresh-btn");
@@ -110,6 +113,7 @@ let statsChildrenTopNonAttendChart = null;
 let statsWaterChart = null;
 let statsEmploymentChart = null;
 let statsBarangayFactorsChart = null;
+let statsCustomCharts = [];
 let latestStatistics = null;
 
 function formatRange(min, max) {
@@ -1293,275 +1297,124 @@ function renderStatisticsCharts(stats) {
 
   latestStatistics = stats;
 
-  // Top barangays by census poverty (bar chart)
-  if (statsTopHhCanvas && stats.top_poverty_households) {
-    const s = stats.top_poverty_households;
-    if (statsTopHhChart) statsTopHhChart.destroy();
-    statsTopHhChart = new Chart(statsTopHhCanvas.getContext("2d"), {
-      type: "bar",
-      data: {
-        labels: s.barangays,
-        datasets: [
-          {
-            label: "% of households that are poor",
-            data: s.poverty_magnitude.map((v) => Number((v * 100).toFixed(1))),
-            backgroundColor: "#ef4444",
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          y: {
-            beginAtZero: true,
-            ticks: {
-              callback: (val) => `${val}%`,
-            },
-            grid: {
-              color: "#1e293b",
-            },
-          },
-          x: {
-            ticks: {
-              color: "#cbd5f5",
-              maxRotation: 45,
-              minRotation: 0,
-              font: { size: 10 },
-            },
-            grid: { display: false },
-          },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => {
-                const i = ctx.dataIndex;
-                const hh = s.total_households?.[i];
-                const poor = s.poor_households?.[i];
-                const pct = ctx.parsed.y;
-                if (hh != null && poor != null) {
-                  return `${pct.toFixed(1)}% of ${hh} households poor (${poor} households)`;
-                }
-                return `${pct.toFixed(1)}% of households poor`;
+  // Admin-defined custom sheet visualizations (driven by Admin Data sheets)
+  if (statsCustomSection && statsCustomContainer) {
+    // Destroy any existing custom charts
+    if (Array.isArray(statsCustomCharts)) {
+      statsCustomCharts.forEach((ch) => {
+        if (ch && typeof ch.destroy === "function") {
+          ch.destroy();
+        }
+      });
+    }
+    statsCustomCharts = [];
+
+    statsCustomContainer.innerHTML = "";
+
+    const custom = Array.isArray(stats.custom_sheets) ? stats.custom_sheets : [];
+    if (!custom.length) {
+      statsCustomSection.classList.add("hidden");
+    } else {
+      statsCustomSection.classList.remove("hidden");
+
+      custom.forEach((cfg, index) => {
+        const title = cfg.sheet_name || cfg.safe_name || `Sheet ${index + 1}`;
+        const chartId = `stats-custom-sheet-${index}`;
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "mb-4 border border-slate-800 rounded-lg p-3 bg-slate-950/60";
+
+        const h = document.createElement("h4");
+        h.className = "text-xs font-semibold text-slate-200 mb-1";
+        h.textContent = title;
+        wrapper.appendChild(h);
+
+        const p = document.createElement("p");
+        p.className = "text-[11px] text-slate-400 mb-2";
+        p.textContent =
+          "Driven by the admin Data sheets quick visualization settings for this sheet.";
+        wrapper.appendChild(p);
+
+        const canvasWrapper = document.createElement("div");
+        canvasWrapper.className = "h-40";
+        const canvas = document.createElement("canvas");
+        canvas.id = chartId;
+        canvasWrapper.appendChild(canvas);
+        wrapper.appendChild(canvasWrapper);
+
+        statsCustomContainer.appendChild(wrapper);
+
+        if (typeof Chart === "undefined") return;
+
+        const labels = Array.isArray(cfg.x_labels) ? cfg.x_labels : [];
+        const values = Array.isArray(cfg.y_values) ? cfg.y_values : [];
+        const type = (cfg.chart_type || "bar").toLowerCase();
+
+        const palette = [
+          "#22c55e",
+          "#0ea5e9",
+          "#eab308",
+          "#f97316",
+          "#a855f7",
+          "#ef4444",
+          "#6366f1",
+          "#ec4899",
+        ];
+        const colors = labels.map((_, i) => palette[i % palette.length]);
+
+        const ctx = canvas.getContext("2d");
+        const chart = new Chart(ctx, {
+          type: type === "pie" ? "pie" : type,
+          data: {
+            labels,
+            datasets: [
+              {
+                label: cfg.y_column || "Value",
+                data: values,
+                backgroundColor: type === "pie" ? colors : colors,
+                borderColor: type === "pie" ? colors : colors,
+                borderWidth: type === "line" ? 2 : 0,
+                tension: 0.25,
               },
-            },
+            ],
           },
-        },
-      },
-    });
-  }
-
-  // Poor children attending vs not attending (doughnut)
-  if (statsChildrenCanvas && stats.poor_children_attendance) {
-    const c = stats.poor_children_attendance;
-    if (statsChildrenChart) statsChildrenChart.destroy();
-    statsChildrenChart = new Chart(statsChildrenCanvas.getContext("2d"), {
-      type: "doughnut",
-      data: {
-        labels: ["Attending school", "Not attending"],
-        datasets: [
-          {
-            data: [c.attending, c.not_attending],
-            backgroundColor: ["#22c55e", "#ef4444"],
-          },
-        ],
-      },
-      options: {
-        plugins: {
-          legend: {
-            position: "bottom",
-            labels: { boxWidth: 10, font: { size: 10 } },
-          },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => {
-                const total = (c.attending || 0) + (c.not_attending || 0);
-                const val = ctx.parsed;
-                const pct = total ? (val / total) * 100 : 0;
-                return `${ctx.label}: ${val.toLocaleString()} children (${pct.toFixed(1)}%)`;
-              },
-            },
-          },
-        },
-      },
-    });
-  }
-
-  // Top barangays contributing to poor children not attending school (bar)
-  if (
-    statsChildrenTopNonAttendCanvas &&
-    stats.top_poor_children_not_attending &&
-    stats.poor_children_attendance
-  ) {
-    const t = stats.top_poor_children_not_attending;
-    const totalCityNotAttending =
-      stats.poor_children_attendance.not_attending || 0;
-
-    if (statsChildrenTopNonAttendChart)
-      statsChildrenTopNonAttendChart.destroy();
-
-    statsChildrenTopNonAttendChart = new Chart(
-      statsChildrenTopNonAttendCanvas.getContext("2d"),
-      {
-        type: "bar",
-        data: {
-          labels: t.barangays,
-          datasets: [
-            {
-              data: t.not_attending,
-              backgroundColor: "#ef4444",
-              borderRadius: 4,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          scales: {
-            y: {
-              beginAtZero: true,
-              grid: { color: "#1e293b" },
-            },
-            x: {
-              ticks: {
-                color: "#cbd5f5",
-                maxRotation: 45,
-                minRotation: 0,
-                font: { size: 9 },
-              },
-              grid: { display: false },
-            },
-          },
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              callbacks: {
-                label: (ctx) => {
-                  const i = ctx.dataIndex;
-                  const val = ctx.parsed.y;
-                  const brgyTotal = t.total_children?.[i] || 0;
-                  const shareCity = totalCityNotAttending
-                    ? (val / totalCityNotAttending) * 100
-                    : 0;
-                  const shareBrgy = brgyTotal
-                    ? (val / brgyTotal) * 100
-                    : 0;
-                  const base = `${val.toLocaleString()} children not attending`;
-                  if (!brgyTotal && !totalCityNotAttending) return base;
-                  if (brgyTotal && totalCityNotAttending) {
-                    return `${base} (${shareBrgy.toFixed(
-                      1,
-                    )}% of poor children in barangay, ${shareCity.toFixed(
-                      1,
-                    )}% of city non-attending)`;
-                  }
-                  if (brgyTotal) {
-                    return `${base} (${shareBrgy.toFixed(
-                      1,
-                    )}% of poor children in barangay)`;
-                  }
-                  return `${base} (${shareCity.toFixed(
-                    1,
-                  )}% of city non-attending)`;
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales:
+              type === "pie"
+                ? {}
+                : {
+                    x: {
+                      ticks: { color: "#cbd5f5", font: { size: 10 } },
+                      grid: { display: false },
+                    },
+                    y: {
+                      beginAtZero: true,
+                      ticks: { color: "#cbd5f5", font: { size: 10 } },
+                      grid: { color: "#1e293b" },
+                    },
+                  },
+            plugins: {
+              legend: { labels: { font: { size: 10 } } },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => {
+                    const val = ctx.parsed.y ?? ctx.parsed;
+                    if (val === null || val === undefined || Number.isNaN(val)) {
+                      return `${ctx.dataset.label}: no data`;
+                    }
+                    return `${ctx.dataset.label}: ${val}`;
+                  },
                 },
               },
             },
           },
-        },
-      },
-    );
-  }
+        });
 
-  // Water source composition (stacked bar or simple bar)
-  if (statsWaterCanvas && stats.water_source) {
-    const w = stats.water_source;
-    if (statsWaterChart) statsWaterChart.destroy();
-    statsWaterChart = new Chart(statsWaterCanvas.getContext("2d"), {
-      type: "bar",
-      data: {
-        labels: w.labels,
-        datasets: [
-          {
-            data: w.counts,
-            backgroundColor: [
-              "#22c55e",
-              "#f97316",
-              "#0ea5e9",
-              "#a855f7",
-              "#64748b",
-            ],
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          y: {
-            beginAtZero: true,
-            grid: { color: "#1e293b" },
-          },
-          x: {
-            ticks: { color: "#cbd5f5", font: { size: 9 } },
-            grid: { display: false },
-          },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `${ctx.parsed.y.toLocaleString()} households`,
-            },
-          },
-        },
-      },
-    });
-  }
-
-  // Employment profile of poor workers (horizontal bar)
-  if (statsEmploymentCanvas && stats.poor_employment_occupation) {
-    const e = stats.poor_employment_occupation;
-    if (statsEmploymentChart) statsEmploymentChart.destroy();
-    statsEmploymentChart = new Chart(statsEmploymentCanvas.getContext("2d"), {
-      type: "bar",
-      data: {
-        labels: e.labels,
-        datasets: [
-          {
-            data: e.counts,
-            backgroundColor: "#0ea5e9",
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        indexAxis: "y",
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: {
-            beginAtZero: true,
-            grid: { color: "#1e293b" },
-          },
-          y: {
-            ticks: { color: "#cbd5f5", font: { size: 9 } },
-            grid: { display: false },
-          },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `${ctx.parsed.x.toLocaleString()} workers`,
-            },
-          },
-        },
-      },
-    });
+        statsCustomCharts.push(chart);
+      });
+    }
   }
 
   // Barangay factors (per-barangay profile)

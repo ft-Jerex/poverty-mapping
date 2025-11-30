@@ -48,7 +48,7 @@ pm_webapp/
 .env.local
 
 # Data files
-*.csv
+# *.csv
 *.geojson
 *.gpkg
 *.tif
