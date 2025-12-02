@@ -1,0 +1,8 @@
+{
+  "phase": "ERROR",
+  "message": "Refresh failed: povmapbackend not found at C:\\Users\\Admin\\povmapbackend",
+  "progress": 0,
+  "total_steps": 100,
+  "updated_at": "2025-12-03T05:01:43.337924",
+  "error": "povmapbackend not found at C:\\Users\\Admin\\povmapbackend"
+}
