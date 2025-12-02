@@ -12,6 +12,75 @@ from typing import Optional
 import pandas as pd
 import geopandas as gpd
 import numpy as np
+from scipy.spatial import cKDTree
+
+
+def fill_missing_predictions_spatial(df: pd.DataFrame, pred_col: str, k_neighbors: int = 5) -> pd.DataFrame:
+    """
+    Fill missing predictions using spatial interpolation (IDW).
+    
+    Args:
+        df: DataFrame with lon, lat, and prediction column
+        pred_col: Name of the prediction column to fill
+        k_neighbors: Number of nearest neighbors to use for interpolation
+        
+    Returns:
+        DataFrame with filled predictions
+    """
+    if pred_col not in df.columns:
+        return df
+    
+    if 'lon' not in df.columns or 'lat' not in df.columns:
+        print(f"Warning: Cannot fill {pred_col} - missing lon/lat columns")
+        return df
+    
+    df = df.copy()
+    missing_mask = df[pred_col].isna()
+    
+    if not missing_mask.any():
+        print(f"{pred_col}: No missing values to fill")
+        return df
+    
+    valid_mask = ~missing_mask
+    if valid_mask.sum() == 0:
+        print(f"Warning: No valid {pred_col} values to interpolate from")
+        return df
+    
+    # Get valid coordinates and values
+    valid_coords = df.loc[valid_mask, ['lon', 'lat']].values
+    valid_values = df.loc[valid_mask, pred_col].values
+    missing_coords = df.loc[missing_mask, ['lon', 'lat']].values
+    
+    # Build KD-tree for nearest neighbor search
+    tree = cKDTree(valid_coords)
+    k = min(k_neighbors, len(valid_coords))
+    
+    # Query for k nearest neighbors
+    distances, indices = tree.query(missing_coords, k=k)
+    
+    # Inverse distance weighting
+    filled_values = []
+    for i in range(len(missing_coords)):
+        if k == 1:
+            dists = np.array([distances[i]])
+            idxs = np.array([indices[i]])
+        else:
+            dists = distances[i]
+            idxs = indices[i]
+        
+        # Inverse distance weights
+        weights = 1.0 / (dists + 1e-6)
+        weights = weights / weights.sum()
+        
+        # Weighted average
+        interpolated = np.sum(valid_values[idxs] * weights)
+        filled_values.append(interpolated)
+    
+    # Fill missing values
+    df.loc[missing_mask, pred_col] = filled_values
+    
+    print(f"{pred_col}: Filled {missing_mask.sum()} missing predictions using spatial interpolation")
+    return df
 
 
 def merge_model_predictions(
@@ -148,6 +217,14 @@ def merge_model_predictions(
     if 'barangay_name_clean_loc' in final.columns:
         final['barangay_name_clean'] = final['barangay_name_clean'].fillna(final['barangay_name_clean_loc'])
         final = final.drop(columns=['barangay_name_clean_loc'])
+    
+    # Fill missing predictions using spatial interpolation
+    print("\nFilling missing predictions with spatial interpolation...")
+    if 'lon' in final.columns and 'lat' in final.columns:
+        final = fill_missing_predictions_spatial(final, 'pred_scaled_catboost', k_neighbors=5)
+        final = fill_missing_predictions_spatial(final, 'pred_scaled_rf', k_neighbors=5)
+    else:
+        print("Warning: Cannot fill missing predictions - lon/lat columns not found")
     
     # Save merged CSV with predictions
     output_csv.parent.mkdir(parents=True, exist_ok=True)

@@ -245,9 +245,12 @@ class RefreshPipeline:
             self._update("ERROR", f"Preprocessing error: {str(e)}", 35, error=str(e))
             return False
     
-    def run_model_inference(self) -> bool:
+    def run_model_inference(self) -> tuple[bool, bool]:
         """
         Run CatBoost, RF, and CNN model inference.
+        
+        Returns:
+            (success, used_inference_module): success status and whether inference.py was used
         """
         self._update("INFERENCE", "Running model inference...", 55)
         
@@ -258,7 +261,7 @@ class RefreshPipeline:
             
             if not preprocessed_csv.exists():
                 self._update("ERROR", "Preprocessed data not found", 55, error="Missing input file")
-                return False
+                return False, False
             
             output_dir = self.webapp_data
             
@@ -279,7 +282,10 @@ class RefreshPipeline:
             # Run CNN inference if models exist
             self.run_cnn_inference()
             
-            return True
+            # Inference module creates grid_predictions_comparison.csv directly
+            # Skip merge step and mark as complete
+            self._update("MERGING_DONE", "Predictions already merged by inference module", 90)
+            return True, True  # Success + used inference module
             
         except ImportError:
             # Fallback: run training scripts which also save predictions
@@ -319,14 +325,14 @@ class RefreshPipeline:
                 self.run_cnn_inference()
                 
                 self._update("INFERENCE_DONE", "Model inference complete", 75)
-                return True
+                return True, False  # Success + used training scripts (not inference module)
                 
             except Exception as e:
                 self._update("ERROR", f"Inference error: {str(e)}", 60, error=str(e))
-                return False
+                return False, False
         except Exception as e:
             self._update("ERROR", f"Inference error: {str(e)}", 55, error=str(e))
-            return False
+            return False, False
     
     def run_cnn_inference(self) -> bool:
         """
@@ -507,12 +513,16 @@ class RefreshPipeline:
                 return {"success": False, "phase": "PREPROCESSING", "error": get_status().get("error")}
             
             # Step 3: Model Inference
-            if not self.run_model_inference():
+            inference_success, used_inference_module = self.run_model_inference()
+            if not inference_success:
                 return {"success": False, "phase": "INFERENCE", "error": get_status().get("error")}
             
-            # Step 4: Merge Outputs
-            if not self.merge_and_copy_outputs():
-                return {"success": False, "phase": "MERGING", "error": get_status().get("error")}
+            # Step 4: Merge Outputs (skip if inference module was used - it already merged)
+            if not used_inference_module:
+                if not self.merge_and_copy_outputs():
+                    return {"success": False, "phase": "MERGING", "error": get_status().get("error")}
+            else:
+                print("Skipping merge step - inference module already created final output")
             
             # Step 5: Copy Supporting Files
             self.copy_supporting_files()
