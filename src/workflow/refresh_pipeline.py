@@ -86,9 +86,7 @@ class RefreshPipeline:
     
     def __init__(
         self,
-        povmap_backend_dir: Path,
-        webapp_data_dir: Path,
-        models_dir: Path,
+        project_root: Path,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         callback: Optional[Callable[[str, int], None]] = None,
@@ -97,16 +95,18 @@ class RefreshPipeline:
         Initialize the refresh pipeline.
         
         Args:
-            povmap_backend_dir: Path to povmapbackend directory (contains scripts)
-            webapp_data_dir: Path to poverty-mapping-withbackend/data (output location)
-            models_dir: Path to trained models
+            project_root: Path to project root (poverty-mapping-withbackend)
             start_date: Start date for GEE data extraction (YYYY-MM-DD), default 1 year ago
             end_date: End date for GEE data extraction (YYYY-MM-DD), default today
             callback: Optional callback function(message, progress) for status updates
         """
-        self.povmap_backend = Path(povmap_backend_dir)
-        self.webapp_data = Path(webapp_data_dir)
-        self.models_dir = Path(models_dir)
+        self.project_root = Path(project_root)
+        self.scripts_dir = self.project_root / "scripts"
+        self.assets_dir = self.project_root / "assets"
+        self.output_dir = self.project_root / "output"
+        self.gee_exports_dir = self.project_root / "googleEarthExports"
+        self.webapp_data = self.project_root / "data"
+        self.models_dir = self.project_root / "models"
         self.callback = callback
         
         # Set date range (default: 1 year leading up to today)
@@ -122,11 +122,11 @@ class RefreshPipeline:
         else:
             self.start_date = start_date
         
-        # Verify paths exist
-        if not self.povmap_backend.exists():
-            raise FileNotFoundError(f"povmapbackend not found at {self.povmap_backend}")
+        # Verify required paths exist
+        if not self.scripts_dir.exists():
+            raise FileNotFoundError(f"scripts/ not found at {self.scripts_dir}")
         if not self.models_dir.exists():
-            raise FileNotFoundError(f"Models directory not found at {self.models_dir}")
+            raise FileNotFoundError(f"models/ not found at {self.models_dir}")
     
     def _update(self, phase: str, message: str, progress: int, **kwargs):
         """Update status and call callback if provided."""
@@ -142,7 +142,7 @@ class RefreshPipeline:
         """
         self._update("GEE_EXTRACTION", f"Extracting GEE data for {self.start_date} to {self.end_date}", 10)
         
-        script_path = self.povmap_backend / "geospatial_prep.py"
+        script_path = self.scripts_dir / "geospatial_prep.py"
         
         if not script_path.exists():
             self._update("ERROR", f"geospatial_prep.py not found at {script_path}", 10, error="Script not found")
@@ -162,14 +162,14 @@ class RefreshPipeline:
             )
             
             # Write to a temporary file
-            temp_script = self.povmap_backend / "_geospatial_prep_temp.py"
+            temp_script = self.scripts_dir / "_geospatial_prep_temp.py"
             temp_script.write_text(modified_content, encoding='utf-8')
             
             try:
                 # Run the modified script with UTF-8 encoding to handle emoji characters
                 result = subprocess.run(
                     [sys.executable, "-X", "utf8", str(temp_script)],
-                    cwd=str(self.povmap_backend),
+                    cwd=str(self.project_root),
                     capture_output=True,
                     text=True,
                     encoding='utf-8',
@@ -211,7 +211,7 @@ class RefreshPipeline:
         """
         self._update("PREPROCESSING", "Preprocessing grid data...", 35)
         
-        script_path = self.povmap_backend / "preprocess_grid_data.py"
+        script_path = self.scripts_dir / "preprocess_grid_data.py"
         
         if not script_path.exists():
             self._update("ERROR", f"preprocess_grid_data.py not found", 35, error="Script not found")
@@ -220,7 +220,7 @@ class RefreshPipeline:
         try:
             result = subprocess.run(
                 [sys.executable, str(script_path)],
-                cwd=str(self.povmap_backend),
+                cwd=str(self.project_root),
                 capture_output=True,
                 text=True,
                 timeout=600,  # 10 minute timeout
@@ -257,7 +257,7 @@ class RefreshPipeline:
         try:
             from src.model.inference import run_all_models
             
-            preprocessed_csv = self.povmap_backend / "assets" / "grid_with_comprehensive_data.csv"
+            preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
             
             if not preprocessed_csv.exists():
                 self._update("ERROR", "Preprocessed data not found", 55, error="Missing input file")
@@ -269,7 +269,7 @@ class RefreshPipeline:
                 preprocessed_csv=preprocessed_csv,
                 models_dir=self.models_dir,
                 output_dir=output_dir,
-                povmap_backend_dir=self.povmap_backend,
+                povmap_backend_dir=self.project_root,
             )
             
             self._update(
@@ -293,11 +293,11 @@ class RefreshPipeline:
             
             try:
                 # Run CatBoost
-                catboost_script = self.povmap_backend / "train_catboost_model.py"
+                catboost_script = self.scripts_dir / "train_catboost_model.py"
                 if catboost_script.exists():
                     result = subprocess.run(
                         [sys.executable, str(catboost_script)],
-                        cwd=str(self.povmap_backend),
+                        cwd=str(self.project_root),
                         capture_output=True,
                         text=True,
                         timeout=1200,
@@ -308,11 +308,11 @@ class RefreshPipeline:
                 self._update("INFERENCE", "Running RF training/inference...", 65)
                 
                 # Run RF
-                rf_script = self.povmap_backend / "train_rf_model.py"
+                rf_script = self.scripts_dir / "train_rf_model.py"
                 if rf_script.exists():
                     result = subprocess.run(
                         [sys.executable, str(rf_script)],
-                        cwd=str(self.povmap_backend),
+                        cwd=str(self.project_root),
                         capture_output=True,
                         text=True,
                         timeout=1200,
@@ -340,31 +340,31 @@ class RefreshPipeline:
         Creates all_cells_predictions_1km.csv for webapp.
         """
         try:
-            cnn_script = self.povmap_backend / "cnn_data_preprocessing.py"
+            cnn_script = self.scripts_dir / "cnn_data_preprocessing.py"
             if not cnn_script.exists():
                 print("CNN script not found, skipping CNN inference")
                 return False
             
             # Check if CNN models exist
             model_path = self.models_dir / "pytorch_fusion_cnn" / "best_fusion_model.pth"
-            scaler_path = self.povmap_backend / "output" / "fusion_pytorch_1km" / "s2_scaler_grid.pkl"
+            scaler_path = self.output_dir / "fusion_pytorch_1km" / "s2_scaler_grid.pkl"
             
             if not model_path.exists():
                 print(f"CNN model not found at {model_path}, skipping CNN inference")
                 return False
             
             # Check for Sentinel-2 GeoTIFF
-            sentinel2_tif = self.povmap_backend / "data" / "satellite_imagery" / f"sentinel2_zamboanga_{datetime.now().year}.tif"
+            sentinel2_tif = self.project_root / "data" / "satellite_imagery" / f"sentinel2_zamboanga_{datetime.now().year}.tif"
             
             # Build command
             cmd = [
                 sys.executable,
                 str(cnn_script),
                 "--year", str(datetime.now().year),
-                "--roi_shapefile", str(self.povmap_backend / "assets" / "shapefile" / "zc04AdminBoundaries_gcs.shp"),
+                "--roi_shapefile", str(self.assets_dir / "shapefile" / "zc04AdminBoundaries_gcs.shp"),
                 "--model_path", str(model_path),
                 "--scaler_path", str(scaler_path),
-                "--output_dir", str(self.povmap_backend / "output" / f"cnn_reuse_1km_{datetime.now().year}"),
+                "--output_dir", str(self.output_dir / f"cnn_reuse_1km_{datetime.now().year}"),
             ]
             
             if sentinel2_tif.exists():
@@ -372,7 +372,7 @@ class RefreshPipeline:
             
             result = subprocess.run(
                 cmd,
-                cwd=str(self.povmap_backend),
+                cwd=str(self.project_root),
                 capture_output=True,
                 text=True,
                 timeout=3600,  # 1 hour timeout
@@ -383,7 +383,7 @@ class RefreshPipeline:
                 return False
             
             # Convert CNN output to webapp format
-            cnn_output_dir = self.povmap_backend / "output" / f"cnn_reuse_1km_{datetime.now().year}"
+            cnn_output_dir = self.output_dir / f"cnn_reuse_1km_{datetime.now().year}"
             cnn_filled_csv = cnn_output_dir / f"grid_predictions_{datetime.now().year}_filled.csv"
             
             if cnn_filled_csv.exists():
@@ -415,10 +415,20 @@ class RefreshPipeline:
         try:
             from src.workflow.merge_predictions import merge_model_predictions
             
-            catboost_preds = self.povmap_backend / "output" / "catBoost" / "geospatial_disagg" / "grid_predictions.csv"
-            rf_preds = self.povmap_backend / "output" / "rf" / "geospatial_disagg" / "grid_predictions.csv"
-            grid_data = self.povmap_backend / "assets" / "grid_with_comprehensive_data.csv"
-            raw_gee_export = self.povmap_backend / "googleEarthExports" / "zc04_grid_data_2024.csv"
+            catboost_preds = self.output_dir / "catBoost" / "geospatial_disagg" / "grid_predictions.csv"
+            rf_preds = self.output_dir / "rf" / "geospatial_disagg" / "grid_predictions.csv"
+            grid_data = self.assets_dir / "grid_with_comprehensive_data.csv"
+            # Select latest available GEE export CSV (avoid hardcoded year)
+            gee_dir = self.gee_exports_dir
+            raw_gee_export = gee_dir / "zc04_grid_data_2024.csv"
+            if gee_dir.exists():
+                try:
+                    candidates = sorted(gee_dir.glob("zc04_grid_data_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if candidates:
+                        raw_gee_export = candidates[0]
+                        print(f"Using latest GEE export: {raw_gee_export}")
+                except Exception:
+                    pass
             
             # Check if prediction files exist
             if not catboost_preds.exists():
@@ -433,8 +443,8 @@ class RefreshPipeline:
                 return False
             
             if not raw_gee_export.exists():
-                self._update("ERROR", "Raw GEE export not found - needed for .geo column", 80, error="Missing GEE export")
-                return False
+                # Fallback: continue merge without .geo; frontend will still show predictions
+                self._update("WARNING", "Raw GEE export not found - proceeding without .geo geometry", 80)
             
             output_csv = self.webapp_data / "grid_predictions_comparison.csv"
             output_geojson = self.webapp_data / "grid_with_comprehensive_data.geojson"
@@ -466,14 +476,14 @@ class RefreshPipeline:
         
         try:
             # Copy grid gpkg if exists
-            grid_gpkg_src = self.povmap_backend / "output" / "grids" / "grid_1km.gpkg"
+            grid_gpkg_src = self.output_dir / "grids" / "grid_1km.gpkg"
             grid_gpkg_dst = self.webapp_data / "grid_1km_all.gpkg"
             
             if grid_gpkg_src.exists():
                 shutil.copy2(grid_gpkg_src, grid_gpkg_dst)
             
             # Copy shapefile directory if not already present
-            shapefile_src = self.povmap_backend / "assets" / "shapefile"
+            shapefile_src = self.assets_dir / "shapefile"
             shapefile_dst = self.webapp_data / "shapefile"
             
             if shapefile_src.exists() and not shapefile_dst.exists():
@@ -551,9 +561,7 @@ class RefreshPipeline:
 
 
 def run_refresh_async(
-    povmap_backend_dir: str,
-    webapp_data_dir: str,
-    models_dir: str,
+    project_root: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     skip_gee: bool = False,
@@ -562,9 +570,7 @@ def run_refresh_async(
     Run refresh pipeline in a background thread.
     
     Args:
-        povmap_backend_dir: Path to povmapbackend directory
-        webapp_data_dir: Path to webapp data directory
-        models_dir: Path to models directory
+        project_root: Path to project root directory (poverty-mapping-withbackend)
         start_date: Start date for GEE extraction (YYYY-MM-DD)
         end_date: End date for GEE extraction (YYYY-MM-DD)
         skip_gee: If True, skip GEE extraction
@@ -581,9 +587,7 @@ def run_refresh_async(
         def _run():
             try:
                 pipeline = RefreshPipeline(
-                    povmap_backend_dir=Path(povmap_backend_dir),
-                    webapp_data_dir=Path(webapp_data_dir),
-                    models_dir=Path(models_dir),
+                    project_root=Path(project_root),
                     start_date=start_date,
                     end_date=end_date,
                 )
@@ -597,10 +601,14 @@ def run_refresh_async(
         return thread
 
 
-# Default paths for this project
-DEFAULT_POVMAP_BACKEND = Path(r"C:\Users\Admin\povmapbackend")
-DEFAULT_WEBAPP_DATA = Path(r"C:\Users\Admin\Downloads\poverty-mapping-withbackend\poverty-mapping-withbackend\data")
-DEFAULT_MODELS = Path(r"C:\Users\Admin\Downloads\poverty-mapping-withbackend\poverty-mapping-withbackend\models")
+# Default paths - all inside this workspace
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+DEFAULT_SCRIPTS_DIR = _PROJECT_ROOT / "scripts"      # GEE extraction, preprocessing, training scripts
+DEFAULT_ASSETS_DIR = _PROJECT_ROOT / "assets"        # Shapefiles, socioeconomic CSVs
+DEFAULT_OUTPUT_DIR = _PROJECT_ROOT / "output"        # Model outputs
+DEFAULT_GEE_EXPORTS_DIR = _PROJECT_ROOT / "googleEarthExports"
+DEFAULT_WEBAPP_DATA = _PROJECT_ROOT / "data"
+DEFAULT_MODELS = _PROJECT_ROOT / "models"
 
 
 def main():
@@ -608,20 +616,14 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Run poverty mapping data refresh pipeline")
-    parser.add_argument("--povmap-backend", type=str, default=str(DEFAULT_POVMAP_BACKEND),
-                       help="Path to povmapbackend directory")
-    parser.add_argument("--webapp-data", type=str, default=str(DEFAULT_WEBAPP_DATA),
-                       help="Path to webapp data directory")
-    parser.add_argument("--models", type=str, default=str(DEFAULT_MODELS),
-                       help="Path to models directory")
+    parser.add_argument("--project-root", type=str, default=str(_PROJECT_ROOT),
+                       help="Path to project root (poverty-mapping-withbackend)")
     parser.add_argument("--skip-gee", action="store_true",
                        help="Skip GEE extraction (use existing data)")
     args = parser.parse_args()
     
     pipeline = RefreshPipeline(
-        povmap_backend_dir=Path(args.povmap_backend),
-        webapp_data_dir=Path(args.webapp_data),
-        models_dir=Path(args.models),
+        project_root=Path(args.project_root),
     )
     
     result = pipeline.run_full_refresh(skip_gee=args.skip_gee)

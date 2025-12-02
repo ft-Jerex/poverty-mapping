@@ -91,9 +91,13 @@ def merge_model_predictions(
     output_csv: Path,
     output_geojson: Optional[Path] = None,
     comprehensive_output_csv: Optional[Path] = None,
+    grid_gpkg_path: Optional[Path] = None,
 ) -> pd.DataFrame:
     """
     Merge CatBoost and RF predictions into a single CSV.
+    
+    Uses grid_1km_all.gpkg as the authoritative grid source to ensure
+    all ROI cells are included (matches CNN grid).
     
     Args:
         catboost_predictions_csv: Path to CatBoost grid_predictions.csv
@@ -103,6 +107,7 @@ def merge_model_predictions(
         output_csv: Path to write merged predictions
         output_geojson: Optional path to write GeoJSON version
         comprehensive_output_csv: Optional path to write grid_with_comprehensive_data.csv for webapp
+        grid_gpkg_path: Optional path to grid_1km_all.gpkg (authoritative grid)
         
     Returns:
         Merged DataFrame
@@ -152,7 +157,7 @@ def merge_model_predictions(
         on='grid_cell_id',
         how='outer'
     )
-    
+
     print(f"Merged {len(merged)} predictions (before aggregation)")
     
     # Aggregate to grid level (average predictions for multiple samples per grid)
@@ -208,10 +213,50 @@ def merge_model_predictions(
         location_cols.append('lat')
     
     grid_location = grid_df[location_cols].drop_duplicates(subset=['grid_id'])
+
+    # Use CNN grid (grid_1km_all.gpkg) as authoritative source for full ROI coverage
+    # This ensures all grid cells are included, not just those with GEE data
+    all_grids = None
+    if grid_gpkg_path is None:
+        grid_gpkg_path = output_csv.parent / "grid_1km_all.gpkg"
     
-    # Merge geometry with predictions
-    final = merged.merge(grid_geo, on='grid_id', how='left')
-    final = final.merge(grid_location, on='grid_id', how='left', suffixes=('', '_loc'))
+    if grid_gpkg_path and Path(grid_gpkg_path).exists():
+        print(f"Loading authoritative grid from: {grid_gpkg_path}")
+        cnn_grid = gpd.read_file(grid_gpkg_path)
+        
+        # Convert cell_id format (cell_0000_0021 -> 0_21) to match other data
+        def convert_cell_id(cell_id):
+            parts = cell_id.replace('cell_', '').split('_')
+            return str(int(parts[0])) + '_' + str(int(parts[1]))
+        
+        cnn_grid['grid_id'] = cnn_grid['cell_id'].apply(convert_cell_id)
+        cnn_grid['lon'] = cnn_grid['centroid_lon']
+        cnn_grid['lat'] = cnn_grid['centroid_lat']
+        
+        # Get geometry as GeoJSON for .geo column
+        cnn_grid_wgs84 = cnn_grid.to_crs(epsg=4326) if cnn_grid.crs != 'EPSG:4326' else cnn_grid
+        cnn_grid['.geo'] = cnn_grid_wgs84.geometry.apply(
+            lambda g: json.dumps({'type': 'Polygon', 'coordinates': [list(g.exterior.coords)]})
+        )
+        
+        all_grids = cnn_grid[['grid_id', 'cell_id', 'lon', 'lat', '.geo']].copy()
+        print(f"Authoritative grid has {len(all_grids)} cells")
+    else:
+        print(f"Warning: grid_gpkg not found at {grid_gpkg_path}, using GEE-based grid")
+        all_grids = grid_location[['grid_id']].drop_duplicates()
+    
+    # Start from full grid and left-join predictions
+    final = all_grids.merge(merged, on='grid_id', how='left')
+    
+    # Merge geometry from GEE if not already present
+    if '.geo' not in final.columns or final['.geo'].isna().all():
+        final = final.merge(grid_geo[['grid_id', '.geo']], on='grid_id', how='left', suffixes=('', '_gee'))
+        if '.geo_gee' in final.columns:
+            final['.geo'] = final['.geo'].fillna(final['.geo_gee'])
+            final = final.drop(columns=['.geo_gee'])
+    
+    # Merge barangay info
+    final = final.merge(grid_location[['grid_id', 'barangay_name_clean']], on='grid_id', how='left', suffixes=('', '_loc'))
     
     # Handle barangay name column duplicates
     if 'barangay_name_clean_loc' in final.columns:
@@ -226,6 +271,46 @@ def merge_model_predictions(
     else:
         print("Warning: Cannot fill missing predictions - lon/lat columns not found")
     
+    # Optional: Backfill missing RF/CatBoost predictions using CNN (complete ROI)
+    try:
+        cnn_csv = output_csv.parent / "all_cells_predictions_1km.csv"
+        if cnn_csv.exists():
+            cnn_df = pd.read_csv(cnn_csv)
+            
+            # CNN uses cell_id format (cell_0000_0021), convert to grid_id (0_21)
+            if 'cell_id' in cnn_df.columns and 'grid_id' not in cnn_df.columns:
+                def convert_cell_id(cell_id):
+                    parts = cell_id.replace('cell_', '').split('_')
+                    return str(int(parts[0])) + '_' + str(int(parts[1]))
+                cnn_df['grid_id'] = cnn_df['cell_id'].apply(convert_cell_id)
+            
+            # Rename prediction column
+            if 'predicted_poverty' in cnn_df.columns:
+                cnn_df = cnn_df.rename(columns={'predicted_poverty': 'cnn_pred'})
+
+            if 'grid_id' in cnn_df.columns and 'cnn_pred' in cnn_df.columns:
+                print(f"CNN data: {len(cnn_df)} cells with predictions")
+                final = final.merge(cnn_df[['grid_id', 'cnn_pred']], on='grid_id', how='left')
+                # Backfill: only fill missing values
+                if 'pred_scaled_catboost' in final.columns:
+                    missing_cat = final['pred_scaled_catboost'].isna().sum()
+                    final['pred_scaled_catboost'] = final['pred_scaled_catboost'].fillna(final['cnn_pred'])
+                    filled_cat = missing_cat - final['pred_scaled_catboost'].isna().sum()
+                    if filled_cat > 0:
+                        print(f"CNN backfill: filled {filled_cat} missing CatBoost predictions")
+                if 'pred_scaled_rf' in final.columns:
+                    missing_rf = final['pred_scaled_rf'].isna().sum()
+                    final['pred_scaled_rf'] = final['pred_scaled_rf'].fillna(final['cnn_pred'])
+                    filled_rf = missing_rf - final['pred_scaled_rf'].isna().sum()
+                    if filled_rf > 0:
+                        print(f"CNN backfill: filled {filled_rf} missing RF predictions")
+            else:
+                print("CNN backfill skipped: grid_id/cnn_pred columns not found")
+        else:
+            print("CNN backfill skipped: all_cells_predictions_1km.csv not found")
+    except Exception as e:
+        print(f"CNN backfill error: {str(e)}")
+
     # Save merged CSV with predictions
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     final.to_csv(output_csv, index=False)
@@ -384,24 +469,27 @@ def main():
     """Run prediction merge with default paths."""
     import argparse
     
+    # Use project-relative paths by default
+    _PROJECT_ROOT = Path(__file__).parent.parent.parent
+    
     parser = argparse.ArgumentParser(description="Merge model predictions for web app")
-    parser.add_argument("--povmap-backend", type=str, 
-                       default=r"C:\Users\Admin\povmapbackend",
-                       help="Path to povmapbackend directory")
+    parser.add_argument("--project-root", type=str, 
+                       default=str(_PROJECT_ROOT),
+                       help="Path to project root (poverty-mapping-withbackend)")
     parser.add_argument("--output-dir", type=str,
-                       default=r"C:\Users\Admin\Downloads\poverty-mapping-withbackend\poverty-mapping-withbackend\data",
+                       default=str(_PROJECT_ROOT / "data"),
                        help="Output directory for merged predictions")
     args = parser.parse_args()
     
-    backend = Path(args.povmap_backend)
+    project = Path(args.project_root)
     output = Path(args.output_dir)
     
     # Merge CatBoost and RF predictions
     merge_model_predictions(
-        catboost_predictions_csv=backend / "output" / "catBoost" / "geospatial_disagg" / "grid_predictions.csv",
-        rf_predictions_csv=backend / "output" / "rf" / "geospatial_disagg" / "grid_predictions.csv",
-        grid_data_csv=backend / "assets" / "grid_with_comprehensive_data.csv",
-        raw_gee_export_csv=backend / "googleEarthExports" / "zc04_grid_data_2024.csv",
+        catboost_predictions_csv=project / "output" / "catBoost" / "geospatial_disagg" / "grid_predictions.csv",
+        rf_predictions_csv=project / "output" / "rf" / "geospatial_disagg" / "grid_predictions.csv",
+        grid_data_csv=project / "assets" / "grid_with_comprehensive_data.csv",
+        raw_gee_export_csv=project / "googleEarthExports" / "zc04_grid_data_2024.csv",
         output_csv=output / "grid_predictions_comparison.csv",
         output_geojson=output / "grid_with_comprehensive_data.geojson",
         comprehensive_output_csv=output / "grid_with_comprehensive_data.csv",

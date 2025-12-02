@@ -49,8 +49,11 @@ SHEETS_CONFIG_PATH = CSV_DIR / "sheets_chart_config.json"
 
 USERS_DB_PATH = DATA_DIR / "users.db"
 
-# Refresh pipeline configuration
-POVMAP_BACKEND_DIR = Path(os.getenv("POVMAP_BACKEND_DIR", r"C:\Users\Admin\povmapbackend"))
+# Refresh pipeline configuration (all paths inside this workspace)
+SCRIPTS_DIR = ROOT / "scripts"  # Contains GEE extraction, preprocessing, training scripts
+ASSETS_DIR = ROOT / "assets"    # Contains shapefiles, socioeconomic CSVs
+OUTPUT_DIR = ROOT / "output"    # Contains model outputs
+GEE_EXPORTS_DIR = ROOT / "googleEarthExports"  # GEE data exports
 MODELS_DIR = ROOT / "models"
 REFRESH_COOLDOWN_DAYS = 90  # Warn if refresh less than this many days ago
 MAX_DATE_RANGE_DAYS = 365  # Maximum date range for data collection
@@ -1939,9 +1942,7 @@ def api_refresh() -> object:
     # Start the refresh pipeline
     try:
         thread = run_refresh_async(
-            povmap_backend_dir=str(POVMAP_BACKEND_DIR),
-            webapp_data_dir=str(DATA_DIR),
-            models_dir=str(MODELS_DIR),
+            project_root=str(ROOT),
             start_date=start_date_str,
             end_date=end_date_str,
             skip_gee=skip_gee,

@@ -330,9 +330,10 @@ def run_all_models(
     outputs = {}
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Determine povmap_backend_dir if not provided
+    # Determine output_dir for feature columns if not provided
     if povmap_backend_dir is None:
-        povmap_backend_dir = Path(r"C:\Users\Admin\povmapbackend")
+        # Use workspace-relative output directory
+        povmap_backend_dir = Path(__file__).parent.parent.parent
     
     # CatBoost
     catboost_model = models_dir / "catboost_disagg_model.cbm"

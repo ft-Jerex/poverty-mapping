@@ -16,12 +16,11 @@ DATA_DIR = ROOT / "data"
 STATIC_DIR = ROOT / "static"
 MODELS_DIR = ROOT / "models"
 
-# External dependencies (povmapbackend workspace)
-# This should point to where the GEE extraction and preprocessing scripts live
-POVMAP_BACKEND_DIR = Path(os.getenv(
-    "POVMAP_BACKEND_DIR",
-    r"C:\Users\Admin\povmapbackend"
-))
+# All required files are inside this workspace
+SCRIPTS_DIR = ROOT / "scripts"  # GEE extraction, preprocessing, training scripts
+ASSETS_DIR = ROOT / "assets"    # Shapefiles, socioeconomic CSVs, grid data
+OUTPUT_DIR = ROOT / "output"    # Model outputs (predictions, feature columns)
+GEE_EXPORTS_DIR = ROOT / "googleEarthExports"  # GEE CSV exports
 
 # Database
 USERS_DB_PATH = DATA_DIR / "users.db"
@@ -38,14 +37,14 @@ CNN_PRED_PATH = DATA_DIR / "all_cells_predictions_1km.csv"
 # CSV outputs directory
 CSV_DIR = ROOT / "csv_outputs"
 
-# Model paths (these are trained models from povmapbackend)
+# Model paths (trained models)
 CATBOOST_MODEL_PATH = MODELS_DIR / "catboost_disagg_model.cbm"
 RF_MODEL_PATH = MODELS_DIR / "rf_disagg_model.pkl"
 CNN_MODEL_PATH = MODELS_DIR / "pytorch_fusion_cnn" / "final_fusion_model.pth"
 
-# Feature column definitions (from training)
-CATBOOST_FEATURES_PATH = POVMAP_BACKEND_DIR / "output" / "catBoost" / "geospatial_disagg" / "feature_columns.json"
-RF_FEATURES_PATH = POVMAP_BACKEND_DIR / "output" / "rf" / "geospatial_disagg" / "feature_columns.json"
+# Feature column definitions (from training output)
+CATBOOST_FEATURES_PATH = OUTPUT_DIR / "catBoost" / "geospatial_disagg" / "feature_columns.json"
+RF_FEATURES_PATH = OUTPUT_DIR / "rf" / "geospatial_disagg" / "feature_columns.json"
 
 # Refresh settings
 REFRESH_COOLDOWN_DAYS = 90  # Warn if refresh less than this many days ago

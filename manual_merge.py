@@ -10,25 +10,29 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from workflow.merge_predictions import merge_model_predictions
 
-backend = Path(r"C:\Users\Admin\povmapbackend")
-output = Path(__file__).parent / "data"
+# Use project-relative paths (all files are now inside this workspace)
+project_root = Path(__file__).parent
+output = project_root / "data"
 
 print("Starting merge with updated parameters...")
-print(f"Backend: {backend}")
+print(f"Project root: {project_root}")
 print(f"Output: {output}")
 
 try:
     # Merge CatBoost and RF predictions with .geo column from raw GEE export
+    # Uses grid_1km_all.gpkg as authoritative grid source for full ROI coverage
     result = merge_model_predictions(
-        catboost_predictions_csv=backend / "output" / "catBoost" / "geospatial_disagg" / "grid_predictions.csv",
-        rf_predictions_csv=backend / "output" / "rf" / "geospatial_disagg" / "grid_predictions.csv",
-        grid_data_csv=backend / "assets" / "grid_with_comprehensive_data.csv",
-        raw_gee_export_csv=backend / "googleEarthExports" / "zc04_grid_data_2024.csv",
+        catboost_predictions_csv=project_root / "output" / "catBoost" / "geospatial_disagg" / "grid_predictions.csv",
+        rf_predictions_csv=project_root / "output" / "rf" / "geospatial_disagg" / "grid_predictions.csv",
+        grid_data_csv=project_root / "assets" / "grid_with_comprehensive_data.csv",
+        raw_gee_export_csv=project_root / "googleEarthExports" / "zc04_grid_data_2024.csv",
         output_csv=output / "grid_predictions_comparison.csv",
         output_geojson=output / "grid_with_comprehensive_data.geojson",
         comprehensive_output_csv=output / "grid_with_comprehensive_data.csv",
+        grid_gpkg_path=output / "grid_1km_all.gpkg",  # Authoritative grid for full ROI
     )
     print("\n✓ Merge completed successfully!")
+    print(f"Total grid cells: {len(result)}")
     print(f"Generated files:")
     print(f"  - {output / 'grid_predictions_comparison.csv'}")
     print(f"  - {output / 'grid_with_comprehensive_data.csv'}")
