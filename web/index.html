@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Poverty Map Pipeline Status</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; background: #0f172a; color: #e5e7eb; }
+    h1 { color: #f97316; }
+    a { color: #38bdf8; }
+    .card { border-radius: 0.75rem; padding: 1.5rem; background: #020617; box-shadow: 0 10px 30px rgba(0,0,0,0.6); max-width: 800px; }
+    .section { margin-top: 1.5rem; }
+    code { background: #020617; padding: 0.15rem 0.35rem; border-radius: 0.25rem; }
+    ul { margin-left: 1.25rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Poverty Mapping Pipeline</h1>
+    <p>This page is served from your local Python HTTP server and reflects the current state of the automation pipeline.</p>
+
+    <div class="section">
+      <h2>Demo Workflow Artifacts</h2>
+      <ul>
+        <li>Synthetic features: <code>demo_data/synthetic_features.tif</code></li>
+        <li>Synthetic poverty map: <code>demo_data/synthetic_poverty_map.tif</code></li>
+      </ul>
+      <p>
+        To (re)generate these demo layers, run in a terminal:
+      </p>
+      <pre><code>python scripts/demo_full_workflow.py</code></pre>
+      <p>
+        You can then configure your JavaScript web map (e.g. Leaflet, MapLibre, deck.gl) to load
+        <code>demo_data/synthetic_poverty_map.tif</code> from this same origin.
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>GEE Extraction Pipeline</h2>
+      <p>The backend Python package exposes a quarterly GEE pipeline. From the project root:</p>
+      <pre><code>python -m src.workflow.run_pipeline --year 2023 --quarter 3 --datasets sentinel2 landsat modis chirps dem</code></pre>
+      <p>Monitor tasks in the Google Earth Engine Tasks console, then download exports and feed them into your preprocessing + model stack.</p>
+    </div>
+
+    <div class="section">
+      <h2>Tests & CI</h2>
+      <p>To run tests with coverage locally:</p>
+      <pre><code>pytest</code></pre>
+      <p>GitHub Actions CI is configured in <code>.github/workflows/ci.yml</code> to run the same suite.</p>
+    </div>
+
+    <div class="section">
+      <h2>Next Steps</h2>
+      <ul>
+        <li>Hook this page into your actual web viewer (tileserver or web map library).</li>
+        <li>Style and brand the UI to match your poverty mapping site.</li>
+        <li>Wire live layer URLs once your export + tiling pipeline is in production.</li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

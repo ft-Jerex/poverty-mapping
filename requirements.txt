@@ -1,5 +1,0 @@
-fastapi
-uvicorn[standard]
-geopandas
-pandas
-shapely

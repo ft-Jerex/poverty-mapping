@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZC Poverty Mapping - Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      font-family: "Poppins", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+  <nav class="border-b border-slate-800 bg-slate-950/80 backdrop-blur">
+    <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2">
+        <span class="text-base font-semibold tracking-wide text-slate-100">ZC Poverty Mapping</span>
+      </a>
+      <a href="/" class="text-sm text-slate-300 hover:text-emerald-400 transition-colors">Back to home</a>
+    </div>
+  </nav>
+
+  <main class="flex-1 flex items-center justify-center px-4 py-10">
+    <div class="w-full max-w-md">
+      <div class="bg-slate-900/80 border border-slate-800 rounded-2xl shadow-xl p-6">
+        <h1 class="text-xl font-semibold mb-2">Admin access</h1>
+        <p class="text-sm text-slate-300 mb-6">
+          Use your admin username and password to access the Zamboanga City poverty mapping
+          dashboard.
+        </p>
+
+        <form
+          method="POST"
+          action="/auth/login"
+          class="space-y-3 mb-4"
+        >
+          <div>
+            <label for="login-username" class="block text-xs font-medium text-slate-300 mb-1">Username</label>
+            <input
+              id="login-username"
+              name="username"
+              type="text"
+              required
+              class="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+            />
+          </div>
+          <div>
+            <label for="login-password" class="block text-xs font-medium text-slate-300 mb-1">Password</label>
+            <input
+              id="login-password"
+              name="password"
+              type="password"
+              required
+              class="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+            />
+          </div>
+          <button
+            type="submit"
+            class="w-full inline-flex items-center justify-center px-4 py-2 rounded-full bg-emerald-500 text-slate-900 text-sm font-semibold hover:bg-emerald-400 transition-colors"
+          >
+            Log in
+          </button>
+        </form>
+      </div>
+      <p class="mt-4 text-[11px] text-slate-500 text-center">
+        If you need admin access, please coordinate with the project team.
+      </p>
+    </div>
+  </main>
+</body>
+</html>

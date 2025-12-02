@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZC Poverty Mapping - Data Sheets</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body {
+      height: 100%;
+      font-size: 18px;
+    }
+    body {
+      font-family: "Poppins", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    table.data-table input {
+      background-color: transparent;
+      outline: none;
+    }
+    table.data-table th,
+    table.data-table td {
+      font-size: 12px;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
+  <header class="border-b border-slate-800 bg-slate-950/80 backdrop-blur z-20">
+    <div class="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="text-base font-semibold tracking-wide text-slate-100">ZC Poverty Mapping</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/40">Admin · Data sheets</span>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <a
+          href="/admin"
+          class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors"
+        >
+          Back to map
+        </a>
+        <a
+          href="/logout"
+          class="px-3 py-1.5 rounded-full bg-red-500 text-slate-100 border border-red-400 hover:bg-red-400 transition-colors"
+        >
+          Logout
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 flex overflow-hidden">
+    <aside class="w-[26%] border-r border-slate-800 bg-slate-950/70 backdrop-blur flex flex-col">
+      <div class="px-4 py-3 border-b border-slate-800">
+        <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-300">Sheets</h2>
+        <p class="text-[11px] text-slate-400 mt-1">
+          Manage CSV-backed sheets used for statistics and other visualizations.
+        </p>
+      </div>
+      <div class="p-4 border-b border-slate-800 text-xs space-y-2">
+        <button
+          id="upload-sheet-btn"
+          class="w-full px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors"
+        >
+          Upload sheet (CSV)
+        </button>
+        <input
+          id="upload-sheet-input"
+          type="file"
+          accept=".csv,text/csv"
+          class="hidden"
+        />
+        <button
+          id="new-sheet-btn"
+          class="w-full px-3 py-1.5 rounded-full bg-emerald-500 text-slate-900 font-semibold hover:bg-emerald-400 transition-colors"
+        >
+          New sheet
+        </button>
+        <p class="text-[11px] text-slate-400">
+          Existing CSVs listed in <code>sheets_saved_summary.csv</code> appear here automatically.
+        </p>
+      </div>
+      <div id="sheets-list" class="flex-1 overflow-y-auto text-xs p-2 space-y-1"></div>
+    </aside>
+
+    <section class="flex-1 flex flex-col">
+      <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between text-xs">
+        <div class="space-y-0.5">
+          <div class="flex items-center gap-2">
+            <h2 id="sheet-title" class="text-sm font-semibold text-slate-100">No sheet selected</h2>
+            <span id="sheet-meta" class="text-[11px] text-slate-400"></span>
+          </div>
+          <p id="sheet-help" class="text-[11px] text-slate-400">
+            Select a sheet on the left or create a new one to start editing.
+          </p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            id="add-column-btn"
+            class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors disabled:opacity-50"
+            disabled
+          >
+            Add column
+          </button>
+          <button
+            id="add-row-btn"
+            class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors disabled:opacity-50"
+            disabled
+          >
+            Add row
+          </button>
+          <button
+            id="save-sheet-btn"
+            class="px-3 py-1.5 rounded-full bg-emerald-500 text-slate-900 border border-emerald-400 hover:bg-emerald-400 transition-colors font-semibold disabled:opacity-50"
+            disabled
+          >
+            Save changes
+          </button>
+          <button
+            id="export-sheet-btn"
+            class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors disabled:opacity-50"
+            disabled
+          >
+            Export CSV
+          </button>
+          <button
+            id="delete-sheet-btn"
+            class="px-3 py-1.5 rounded-full bg-red-500 text-slate-100 border border-red-400 hover:bg-red-400 transition-colors disabled:opacity-50"
+            disabled
+          >
+            Delete sheet
+          </button>
+        </div>
+      </div>
+
+      <div class="flex-1 grid grid-rows-[minmax(0,2fr)_minmax(0,1.4fr)] overflow-y-auto min-h-0">
+        <div class="border-b border-slate-800 overflow-auto p-4 min-h-0">
+          <div class="rounded-lg border border-slate-800 bg-slate-950/60 overflow-y-auto max-h-full min-h-0">
+            <table id="sheet-table" class="data-table min-w-full border-collapse text-xs">
+              <thead id="sheet-thead" class="bg-slate-900 border-b border-slate-800"></thead>
+              <tbody id="sheet-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="p-4 flex flex-col gap-3">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="text-xs font-semibold text-slate-200 mb-1">Quick visualization</h3>
+              <p class="text-[11px] text-slate-400">
+                Choose a chart type and columns to explore this sheet. This configuration is local to your browser.
+              </p>
+            </div>
+            <div class="flex items-center flex-wrap gap-2 text-[11px]">
+              <select
+                id="chart-type-select"
+                class="bg-slate-900/80 border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                <option value="bar">Bar</option>
+                <option value="line">Line</option>
+                <option value="pie">Pie</option>
+              </select>
+              <select
+                id="chart-x-select"
+                class="bg-slate-900/80 border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                <option value="">X axis column…</option>
+              </select>
+              <select
+                id="chart-y-select"
+                class="bg-slate-900/80 border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 min-w-[140px]"
+              >
+              </select>
+              <select
+                id="chart-sort-select"
+                class="bg-slate-900/80 border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                <option value="">Sort by…</option>
+              </select>
+              <select
+                id="chart-row-filter-mode"
+                class="bg-slate-900/80 border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                <option value="top5">Top 5 rows</option>
+                <option value="all">All rows</option>
+                <option value="single">Single barangay…</option>
+              </select>
+              <select
+                id="chart-barangay-filter"
+                class="bg-slate-900/80 border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 min-w-[140px] disabled:opacity-50"
+                disabled
+              >
+                <option value="">Select barangay…</option>
+              </select>
+              <label class="inline-flex items-center gap-1 text-[11px] text-slate-300">
+                <input
+                  id="chart-expose-toggle"
+                  type="checkbox"
+                  class="accent-emerald-500"
+                />
+                <span>Show in Statistics tab</span>
+              </label>
+              <button
+                id="update-chart-btn"
+                class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors disabled:opacity-50"
+                disabled
+              >
+                Update chart
+              </button>
+            </div>
+          </div>
+          <div class="flex-1 flex items-center justify-center">
+            <div class="w-full h-48 md:h-56 lg:h-64">
+              <canvas id="sheet-chart"></canvas>
+            </div>
+          </div>
+          <p id="chart-status" class="text-[11px] text-slate-400"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div
+    id="new-sheet-modal"
+    class="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm hidden"
+  >
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-xl max-w-md w-full mx-4 p-6 text-xs">
+      <h2 class="text-sm font-semibold text-slate-100 mb-2">Create new sheet</h2>
+      <p class="text-[11px] text-slate-300 mb-4">
+        Provide a name and a comma-separated list of column headers. You can add rows later in the editor.
+      </p>
+      <div class="space-y-3">
+        <div>
+          <label for="new-sheet-name" class="block text-slate-300 mb-1">Sheet name</label>
+          <input
+            id="new-sheet-name"
+            type="text"
+            class="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+            placeholder="e.g., New Indicator 2025"
+          />
+        </div>
+        <div>
+          <label for="new-sheet-columns" class="block text-slate-300 mb-1">Columns</label>
+          <input
+            id="new-sheet-columns"
+            type="text"
+            class="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+            placeholder="Barangay, Value 1, Value 2, ..."
+          />
+        </div>
+      </div>
+      <p
+        id="new-sheet-error"
+        class="mt-3 text-[11px] text-red-400 hidden"
+      ></p>
+      <div class="flex justify-end gap-2 mt-4 text-xs">
+        <button
+          id="new-sheet-cancel-btn"
+          class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          id="new-sheet-create-btn"
+          class="px-3 py-1.5 rounded-full bg-emerald-500 text-slate-900 border border-emerald-400 hover:bg-emerald-400 transition-colors font-semibold"
+        >
+          Create sheet
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="/static/admin_data.js"></script>
+</body>
+</html>

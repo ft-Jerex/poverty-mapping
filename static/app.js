@@ -4,17 +4,29 @@ const map = L.map("map", {
 
 L.control.zoom({ position: "topright" }).addTo(map);
 
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+let osmBase = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution:
     '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-}).addTo(map);
+});
+
+let satelliteBase = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  {
+    maxZoom: 19,
+    attribution:
+      'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+  },
+);
+
+osmBase.addTo(map);
 
 const statusEl = document.getElementById("status");
 const toggleButtons = Array.from(document.querySelectorAll(".model-toggle"));
 const opacitySlider = document.getElementById("opacity-slider");
 const opacityValue = document.getElementById("opacity-value");
 const legendModelNameEl = document.getElementById("legend-model-name");
+
 const legendContainer = document.querySelector(
   '.backdrop-blur.bg-slate-900\\/75.border.border-slate-700.rounded-lg.shadow-lg.px-4.py-3.w-52.text-xs.text-slate-200.space-y-2'
 );
@@ -32,6 +44,9 @@ const geospatialTabBtn = document.getElementById("tab-geospatial");
 const statisticsTabBtn = document.getElementById("tab-statistics");
 const geospatialPanel = document.getElementById("panel-geospatial");
 const statisticsPanel = document.getElementById("panel-statistics");
+const peopleTabBtn = document.getElementById("tab-people");
+const peoplePanel = document.getElementById("panel-people");
+const peopleListContainer = document.getElementById("people-list");
 const censusToggle = document.getElementById("toggle-census-poverty");
 const statsTopHhCanvas = document.getElementById("stats-top-hh");
 const statsChildrenCanvas = document.getElementById("stats-children");
@@ -42,37 +57,55 @@ const statsWaterCanvas = document.getElementById("stats-water");
 const statsEmploymentCanvas = document.getElementById("stats-employment");
 const barangayFactorsSelect = document.getElementById("barangay-factors-select");
 const statsBarangayFactorsCanvas = document.getElementById("stats-barangay-factors");
+const statsCustomSection = document.getElementById("stats-custom-section");
+const statsCustomContainer = document.getElementById("stats-custom-sheets");
 
-function formatRange(min, max) {
-  // Show as percent with 1 decimal
-  return `${min.toFixed(1)}% – ${max.toFixed(1)}%`;
-}
+const createUserBtn = document.getElementById("create-user-btn");
+const logoutBtn = document.getElementById("logout-btn");
+const refreshBtn = document.getElementById("refresh-btn");
+const downloadMapBtn = document.getElementById("download-map-btn");
+const resetViewBtn = document.getElementById("reset-view-btn");
+const logoutModal = document.getElementById("logout-modal");
+const logoutConfirmBtn = document.getElementById("logout-confirm-btn");
+const logoutCancelBtn = document.getElementById("logout-cancel-btn");
+const createUserModal = document.getElementById("create-user-modal");
+const createUserUsernameInput = document.getElementById("create-user-username");
+const createUserPasswordInput = document.getElementById("create-user-password");
+const createUserErrorEl = document.getElementById("create-user-error");
+const createUserCancelBtn = document.getElementById("create-user-cancel-btn");
+const createUserSubmitBtn = document.getElementById("create-user-submit-btn");
+const feedbackEmailInput = document.getElementById("feedback-email");
+const feedbackBarangayInput = document.getElementById("feedback-barangay");
+const feedbackMessageInput = document.getElementById("feedback-message");
+const feedbackStatusEl = document.getElementById("feedback-status");
+const feedbackSubmitBtn = document.getElementById("feedback-submit-btn");
 
-function updateLegend(modelKey) {
-  if (!legendContainer || !quartileRanges[modelKey]) return;
-  const ranges = quartileRanges[modelKey];
-  // Find the legend color blocks
-  const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
-  if (legendBlocks.length !== 4) return;
-  for (let i = 0; i < 4; ++i) {
-    const range = ranges[i];
-    const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
-    if (labelSpan && range) {
-      // Update label to include value range
-      let labelText = "";
-      if (range.label === "Not poor") {
-        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Lower-middle") {
-        labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Upper-middle") {
-        labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Poorest") {
-        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
-      }
-      labelSpan.textContent = labelText;
-    }
-  }
-}
+// Refresh modal elements
+const refreshModal = document.getElementById("refresh-modal");
+const refreshStartDateInput = document.getElementById("refresh-start-date");
+const refreshEndDateInput = document.getElementById("refresh-end-date");
+const refreshErrorEl = document.getElementById("refresh-error");
+const refreshWarningEl = document.getElementById("refresh-warning");
+const refreshCancelBtn = document.getElementById("refresh-cancel-btn");
+const refreshStartBtn = document.getElementById("refresh-start-btn");
+
+const refreshProgressModal = document.getElementById("refresh-progress-modal");
+const refreshProgressPhase = document.getElementById("refresh-progress-phase");
+const refreshProgressPct = document.getElementById("refresh-progress-pct");
+const refreshProgressBar = document.getElementById("refresh-progress-bar");
+const refreshProgressMessage = document.getElementById("refresh-progress-message");
+const refreshProgressError = document.getElementById("refresh-progress-error");
+const refreshProgressCloseBtn = document.getElementById("refresh-progress-close-btn");
+
+const refreshWarningModal = document.getElementById("refresh-warning-modal");
+const refreshWarningText = document.getElementById("refresh-warning-text");
+const suppressWarningCheckbox = document.getElementById("suppress-warning-checkbox");
+const refreshWarningCancelBtn = document.getElementById("refresh-warning-cancel-btn");
+const refreshWarningProceedBtn = document.getElementById("refresh-warning-proceed-btn");
+
+// Refresh state
+let refreshPollingInterval = null;
+let pendingRefreshParams = null;
 
 const modelLayers = {
   catboost: null,
@@ -107,7 +140,39 @@ let statsChildrenTopNonAttendChart = null;
 let statsWaterChart = null;
 let statsEmploymentChart = null;
 let statsBarangayFactorsChart = null;
+let statsCustomCharts = [];
 let latestStatistics = null;
+
+function formatRange(min, max) {
+  // Show as percent with 1 decimal
+  return `${min.toFixed(1)}% – ${max.toFixed(1)}%`;
+}
+
+function updateLegend(modelKey) {
+  if (!legendContainer || !quartileRanges[modelKey]) return;
+  const ranges = quartileRanges[modelKey];
+  // Find the legend color blocks
+  const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
+  if (legendBlocks.length !== 4) return;
+  for (let i = 0; i < 4; ++i) {
+    const range = ranges[i];
+    const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
+    if (labelSpan && range) {
+      // Update label to include value range
+      let labelText = "";
+      if (range.label === "Not poor") {
+        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Lower-middle") {
+        labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Upper-middle") {
+        labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Poorest") {
+        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
+      }
+      labelSpan.textContent = labelText;
+    }
+  }
+}
 
 function setStatus(text, tone = "info") {
   if (!statusEl) return;
@@ -804,6 +869,39 @@ function createCensusPovertyLayer(geojson) {
   return layer;
 }
 
+function clearAllLayers() {
+  // Remove all model layers from map
+  Object.values(modelLayers).forEach(layer => {
+    if (layer && map.hasLayer(layer)) {
+      map.removeLayer(layer);
+    }
+  });
+  
+  // Remove boundary layers
+  if (boundaryLayer && map.hasLayer(boundaryLayer)) {
+    map.removeLayer(boundaryLayer);
+  }
+  if (barangayBoundaryLayer && map.hasLayer(barangayBoundaryLayer)) {
+    map.removeLayer(barangayBoundaryLayer);
+  }
+  if (barangayLabelLayer && map.hasLayer(barangayLabelLayer)) {
+    map.removeLayer(barangayLabelLayer);
+  }
+  if (barangayHighlightLayer && map.hasLayer(barangayHighlightLayer)) {
+    map.removeLayer(barangayHighlightLayer);
+  }
+  
+  // Reset layer references
+  modelLayers.catboost = null;
+  modelLayers.rf = null;
+  modelLayers.cnn = null;
+  modelLayers.census = null;
+  boundaryLayer = null;
+  barangayBoundaryLayer = null;
+  barangayLabelLayer = null;
+  barangayHighlightLayer = null;
+}
+
 function activateModel(modelKey) {
   Object.entries(modelLayers).forEach(([key, layer]) => {
     if (!layer) return;
@@ -816,6 +914,13 @@ function activateModel(modelKey) {
   });
 
   activeModel = modelKey;
+
+  if (boundaryLayer && map.hasLayer(boundaryLayer)) {
+    boundaryLayer.bringToFront();
+  }
+  if (barangayHighlightLayer && map.hasLayer(barangayHighlightLayer)) {
+    barangayHighlightLayer.bringToFront();
+  }
 
   if (legendModelNameEl) {
     legendModelNameEl.textContent =
@@ -842,13 +947,7 @@ function activateModel(modelKey) {
 
   setStatus(
     `Showing ${
-      modelKey === "catboost"
-        ? "CatBoost"
-        : modelKey === "rf"
-        ? "Random Forest"
-        : modelKey === "cnn"
-        ? "CNN"
-        : "Census Poverty"
+      modelKey === "catboost" ? "CatBoost" : modelKey === "rf" ? "Random Forest" : "CNN"
     } predictions • Hover a grid to see barangay and poverty details`,
   );
 
@@ -904,14 +1003,47 @@ function setupOpacitySlider() {
 function setupBarangayLayerToggles() {
   const borderToggle = document.getElementById("toggle-brgy-borders");
   const labelToggle = document.getElementById("toggle-brgy-labels");
+  const satelliteToggle = document.getElementById("toggle-satellite");
 
   if (borderToggle) {
     borderToggle.addEventListener("change", (e) => {
       if (!boundaryLayer) return;
       if (e.target.checked) {
         boundaryLayer.addTo(map);
+        boundaryLayer.bringToFront();
       } else if (map.hasLayer(boundaryLayer)) {
         map.removeLayer(boundaryLayer);
+      }
+    });
+  }
+
+  if (satelliteToggle) {
+    // Apply initial state on load
+    if (satelliteToggle.checked) {
+      if (osmBase && map.hasLayer(osmBase)) {
+        map.removeLayer(osmBase);
+      }
+      if (satelliteBase && !map.hasLayer(satelliteBase)) {
+        satelliteBase.addTo(map);
+      }
+    }
+
+    satelliteToggle.addEventListener("change", (e) => {
+      const useSatellite = e.target.checked;
+      if (useSatellite) {
+        if (osmBase && map.hasLayer(osmBase)) {
+          map.removeLayer(osmBase);
+        }
+        if (satelliteBase && !map.hasLayer(satelliteBase)) {
+          satelliteBase.addTo(map);
+        }
+      } else {
+        if (satelliteBase && map.hasLayer(satelliteBase)) {
+          map.removeLayer(satelliteBase);
+        }
+        if (osmBase && !map.hasLayer(osmBase)) {
+          osmBase.addTo(map);
+        }
       }
     });
   }
@@ -1041,20 +1173,47 @@ function setActiveTab(tab) {
   if (!geospatialPanel || !statisticsPanel || !geospatialTabBtn || !statisticsTabBtn) return;
 
   const isGeo = tab === "geospatial";
+  const isStats = tab === "statistics";
+  const isPeople = tab === "people";
 
   geospatialPanel.classList.toggle("hidden", !isGeo);
-  statisticsPanel.classList.toggle("hidden", isGeo);
+  statisticsPanel.classList.toggle("hidden", !isStats);
+  if (peoplePanel) {
+    peoplePanel.classList.toggle("hidden", !isPeople);
+  }
 
-  if (isGeo) {
-    geospatialTabBtn.classList.add("text-slate-100", "border-emerald-500");
-    geospatialTabBtn.classList.remove("text-slate-400", "border-transparent");
-    statisticsTabBtn.classList.add("text-slate-400", "border-transparent");
-    statisticsTabBtn.classList.remove("text-slate-100", "border-emerald-500");
-  } else {
-    statisticsTabBtn.classList.add("text-slate-100", "border-emerald-500");
-    statisticsTabBtn.classList.remove("text-slate-400", "border-transparent");
-    geospatialTabBtn.classList.add("text-slate-400", "border-transparent");
-    geospatialTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+  if (geospatialTabBtn) {
+    if (isGeo) {
+      geospatialTabBtn.classList.add("text-slate-100", "border-emerald-500");
+      geospatialTabBtn.classList.remove("text-slate-400", "border-transparent");
+    } else {
+      geospatialTabBtn.classList.add("text-slate-400", "border-transparent");
+      geospatialTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+    }
+  }
+
+  if (statisticsTabBtn) {
+    if (isStats) {
+      statisticsTabBtn.classList.add("text-slate-100", "border-emerald-500");
+      statisticsTabBtn.classList.remove("text-slate-400", "border-transparent");
+    } else {
+      statisticsTabBtn.classList.add("text-slate-400", "border-transparent");
+      statisticsTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+    }
+  }
+
+  if (peopleTabBtn) {
+    if (isPeople) {
+      peopleTabBtn.classList.add("text-slate-100", "border-emerald-500");
+      peopleTabBtn.classList.remove("text-slate-400", "border-transparent");
+    } else {
+      peopleTabBtn.classList.add("text-slate-400", "border-transparent");
+      peopleTabBtn.classList.remove("text-slate-100", "border-emerald-500");
+    }
+  }
+
+  if (isPeople) {
+    fetchPeopleMessages();
   }
 }
 
@@ -1065,6 +1224,132 @@ function setupTabs() {
 
   geospatialTabBtn.addEventListener("click", () => setActiveTab("geospatial"));
   statisticsTabBtn.addEventListener("click", () => setActiveTab("statistics"));
+  if (peopleTabBtn) {
+    peopleTabBtn.addEventListener("click", () => setActiveTab("people"));
+  }
+}
+
+function setupAdminControls() {
+  if (logoutBtn && logoutModal) {
+    logoutBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      logoutModal.classList.remove("hidden");
+    });
+  }
+
+  if (logoutCancelBtn && logoutModal) {
+    logoutCancelBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      logoutModal.classList.add("hidden");
+    });
+  }
+
+  if (logoutConfirmBtn && logoutModal) {
+    logoutConfirmBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      window.location.href = "/logout";
+    });
+  }
+
+  if (createUserBtn && createUserModal) {
+    createUserBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+
+      if (createUserUsernameInput) {
+        createUserUsernameInput.value = "";
+      }
+      if (createUserPasswordInput) {
+        createUserPasswordInput.value = "";
+      }
+      if (createUserErrorEl) {
+        createUserErrorEl.textContent = "";
+        createUserErrorEl.classList.add("hidden");
+      }
+
+      createUserModal.classList.remove("hidden");
+
+      if (createUserUsernameInput) {
+        createUserUsernameInput.focus();
+      }
+    });
+  }
+
+  if (createUserCancelBtn && createUserModal) {
+    createUserCancelBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      createUserModal.classList.add("hidden");
+    });
+  }
+
+  if (createUserSubmitBtn && createUserModal) {
+    createUserSubmitBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+
+      const username = createUserUsernameInput
+        ? createUserUsernameInput.value.trim()
+        : "";
+      const password = createUserPasswordInput ? createUserPasswordInput.value : "";
+
+      if (!username || !password) {
+        if (createUserErrorEl) {
+          createUserErrorEl.textContent = "Username and password are required.";
+          createUserErrorEl.classList.remove("hidden");
+        }
+        return;
+      }
+
+      if (createUserErrorEl) {
+        createUserErrorEl.textContent = "";
+        createUserErrorEl.classList.add("hidden");
+      }
+
+      try {
+        const res = await fetch("/auth/register", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ username, password }),
+        });
+
+        let data = null;
+        try {
+          data = await res.json();
+        } catch (err) {}
+
+        if (!res.ok || !data || data.success === false) {
+          const msg = data && data.error ? data.error : `Request failed with status ${res.status}`;
+          if (createUserErrorEl) {
+            createUserErrorEl.textContent = msg;
+            createUserErrorEl.classList.remove("hidden");
+          }
+          return;
+        }
+
+        createUserModal.classList.add("hidden");
+      } catch (err) {
+        console.error("Error creating user:", err);
+        if (createUserErrorEl) {
+          createUserErrorEl.textContent = "Failed to create user. Check console for details.";
+          createUserErrorEl.classList.remove("hidden");
+        }
+      }
+    });
+  }
+
+  if (downloadMapBtn) {
+    downloadMapBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      downloadMapImage();
+    });
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      openRefreshModal();
+    });
+  }
 }
 
 function renderStatisticsCharts(stats) {
@@ -1072,275 +1357,124 @@ function renderStatisticsCharts(stats) {
 
   latestStatistics = stats;
 
-  // Top barangays by census poverty (bar chart)
-  if (statsTopHhCanvas && stats.top_poverty_households) {
-    const s = stats.top_poverty_households;
-    if (statsTopHhChart) statsTopHhChart.destroy();
-    statsTopHhChart = new Chart(statsTopHhCanvas.getContext("2d"), {
-      type: "bar",
-      data: {
-        labels: s.barangays,
-        datasets: [
-          {
-            label: "% of households that are poor",
-            data: s.poverty_magnitude.map((v) => Number((v * 100).toFixed(1))),
-            backgroundColor: "#ef4444",
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          y: {
-            beginAtZero: true,
-            ticks: {
-              callback: (val) => `${val}%`,
-            },
-            grid: {
-              color: "#1e293b",
-            },
-          },
-          x: {
-            ticks: {
-              color: "#cbd5f5",
-              maxRotation: 45,
-              minRotation: 0,
-              font: { size: 10 },
-            },
-            grid: { display: false },
-          },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => {
-                const i = ctx.dataIndex;
-                const hh = s.total_households?.[i];
-                const poor = s.poor_households?.[i];
-                const pct = ctx.parsed.y;
-                if (hh != null && poor != null) {
-                  return `${pct.toFixed(1)}% of ${hh} households poor (${poor} households)`;
-                }
-                return `${pct.toFixed(1)}% of households poor`;
+  // Admin-defined custom sheet visualizations (driven by Admin Data sheets)
+  if (statsCustomSection && statsCustomContainer) {
+    // Destroy any existing custom charts
+    if (Array.isArray(statsCustomCharts)) {
+      statsCustomCharts.forEach((ch) => {
+        if (ch && typeof ch.destroy === "function") {
+          ch.destroy();
+        }
+      });
+    }
+    statsCustomCharts = [];
+
+    statsCustomContainer.innerHTML = "";
+
+    const custom = Array.isArray(stats.custom_sheets) ? stats.custom_sheets : [];
+    if (!custom.length) {
+      statsCustomSection.classList.add("hidden");
+    } else {
+      statsCustomSection.classList.remove("hidden");
+
+      custom.forEach((cfg, index) => {
+        const title = cfg.sheet_name || cfg.safe_name || `Sheet ${index + 1}`;
+        const chartId = `stats-custom-sheet-${index}`;
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "mb-4 border border-slate-800 rounded-lg p-3 bg-slate-950/60";
+
+        const h = document.createElement("h4");
+        h.className = "text-xs font-semibold text-slate-200 mb-1";
+        h.textContent = title;
+        wrapper.appendChild(h);
+
+        const p = document.createElement("p");
+        p.className = "text-[11px] text-slate-400 mb-2";
+        p.textContent =
+          "Driven by the admin Data sheets quick visualization settings for this sheet.";
+        wrapper.appendChild(p);
+
+        const canvasWrapper = document.createElement("div");
+        canvasWrapper.className = "h-40";
+        const canvas = document.createElement("canvas");
+        canvas.id = chartId;
+        canvasWrapper.appendChild(canvas);
+        wrapper.appendChild(canvasWrapper);
+
+        statsCustomContainer.appendChild(wrapper);
+
+        if (typeof Chart === "undefined") return;
+
+        const labels = Array.isArray(cfg.x_labels) ? cfg.x_labels : [];
+        const values = Array.isArray(cfg.y_values) ? cfg.y_values : [];
+        const type = (cfg.chart_type || "bar").toLowerCase();
+
+        const palette = [
+          "#22c55e",
+          "#0ea5e9",
+          "#eab308",
+          "#f97316",
+          "#a855f7",
+          "#ef4444",
+          "#6366f1",
+          "#ec4899",
+        ];
+        const colors = labels.map((_, i) => palette[i % palette.length]);
+
+        const ctx = canvas.getContext("2d");
+        const chart = new Chart(ctx, {
+          type: type === "pie" ? "pie" : type,
+          data: {
+            labels,
+            datasets: [
+              {
+                label: cfg.y_column || "Value",
+                data: values,
+                backgroundColor: type === "pie" ? colors : colors,
+                borderColor: type === "pie" ? colors : colors,
+                borderWidth: type === "line" ? 2 : 0,
+                tension: 0.25,
               },
-            },
+            ],
           },
-        },
-      },
-    });
-  }
-
-  // Poor children attending vs not attending (doughnut)
-  if (statsChildrenCanvas && stats.poor_children_attendance) {
-    const c = stats.poor_children_attendance;
-    if (statsChildrenChart) statsChildrenChart.destroy();
-    statsChildrenChart = new Chart(statsChildrenCanvas.getContext("2d"), {
-      type: "doughnut",
-      data: {
-        labels: ["Attending school", "Not attending"],
-        datasets: [
-          {
-            data: [c.attending, c.not_attending],
-            backgroundColor: ["#22c55e", "#ef4444"],
-          },
-        ],
-      },
-      options: {
-        plugins: {
-          legend: {
-            position: "bottom",
-            labels: { boxWidth: 10, font: { size: 10 } },
-          },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => {
-                const total = (c.attending || 0) + (c.not_attending || 0);
-                const val = ctx.parsed;
-                const pct = total ? (val / total) * 100 : 0;
-                return `${ctx.label}: ${val.toLocaleString()} children (${pct.toFixed(1)}%)`;
-              },
-            },
-          },
-        },
-      },
-    });
-  }
-
-  // Top barangays contributing to poor children not attending school (bar)
-  if (
-    statsChildrenTopNonAttendCanvas &&
-    stats.top_poor_children_not_attending &&
-    stats.poor_children_attendance
-  ) {
-    const t = stats.top_poor_children_not_attending;
-    const totalCityNotAttending =
-      stats.poor_children_attendance.not_attending || 0;
-
-    if (statsChildrenTopNonAttendChart)
-      statsChildrenTopNonAttendChart.destroy();
-
-    statsChildrenTopNonAttendChart = new Chart(
-      statsChildrenTopNonAttendCanvas.getContext("2d"),
-      {
-        type: "bar",
-        data: {
-          labels: t.barangays,
-          datasets: [
-            {
-              data: t.not_attending,
-              backgroundColor: "#ef4444",
-              borderRadius: 4,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          scales: {
-            y: {
-              beginAtZero: true,
-              grid: { color: "#1e293b" },
-            },
-            x: {
-              ticks: {
-                color: "#cbd5f5",
-                maxRotation: 45,
-                minRotation: 0,
-                font: { size: 9 },
-              },
-              grid: { display: false },
-            },
-          },
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              callbacks: {
-                label: (ctx) => {
-                  const i = ctx.dataIndex;
-                  const val = ctx.parsed.y;
-                  const brgyTotal = t.total_children?.[i] || 0;
-                  const shareCity = totalCityNotAttending
-                    ? (val / totalCityNotAttending) * 100
-                    : 0;
-                  const shareBrgy = brgyTotal
-                    ? (val / brgyTotal) * 100
-                    : 0;
-                  const base = `${val.toLocaleString()} children not attending`;
-                  if (!brgyTotal && !totalCityNotAttending) return base;
-                  if (brgyTotal && totalCityNotAttending) {
-                    return `${base} (${shareBrgy.toFixed(
-                      1,
-                    )}% of poor children in barangay, ${shareCity.toFixed(
-                      1,
-                    )}% of city non-attending)`;
-                  }
-                  if (brgyTotal) {
-                    return `${base} (${shareBrgy.toFixed(
-                      1,
-                    )}% of poor children in barangay)`;
-                  }
-                  return `${base} (${shareCity.toFixed(
-                    1,
-                  )}% of city non-attending)`;
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales:
+              type === "pie"
+                ? {}
+                : {
+                    x: {
+                      ticks: { color: "#cbd5f5", font: { size: 10 } },
+                      grid: { display: false },
+                    },
+                    y: {
+                      beginAtZero: true,
+                      ticks: { color: "#cbd5f5", font: { size: 10 } },
+                      grid: { color: "#1e293b" },
+                    },
+                  },
+            plugins: {
+              legend: { labels: { font: { size: 10 } } },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => {
+                    const val = ctx.parsed.y ?? ctx.parsed;
+                    if (val === null || val === undefined || Number.isNaN(val)) {
+                      return `${ctx.dataset.label}: no data`;
+                    }
+                    return `${ctx.dataset.label}: ${val}`;
+                  },
                 },
               },
             },
           },
-        },
-      },
-    );
-  }
+        });
 
-  // Water source composition (stacked bar or simple bar)
-  if (statsWaterCanvas && stats.water_source) {
-    const w = stats.water_source;
-    if (statsWaterChart) statsWaterChart.destroy();
-    statsWaterChart = new Chart(statsWaterCanvas.getContext("2d"), {
-      type: "bar",
-      data: {
-        labels: w.labels,
-        datasets: [
-          {
-            data: w.counts,
-            backgroundColor: [
-              "#22c55e",
-              "#f97316",
-              "#0ea5e9",
-              "#a855f7",
-              "#64748b",
-            ],
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          y: {
-            beginAtZero: true,
-            grid: { color: "#1e293b" },
-          },
-          x: {
-            ticks: { color: "#cbd5f5", font: { size: 9 } },
-            grid: { display: false },
-          },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `${ctx.parsed.y.toLocaleString()} households`,
-            },
-          },
-        },
-      },
-    });
-  }
-
-  // Employment profile of poor workers (horizontal bar)
-  if (statsEmploymentCanvas && stats.poor_employment_occupation) {
-    const e = stats.poor_employment_occupation;
-    if (statsEmploymentChart) statsEmploymentChart.destroy();
-    statsEmploymentChart = new Chart(statsEmploymentCanvas.getContext("2d"), {
-      type: "bar",
-      data: {
-        labels: e.labels,
-        datasets: [
-          {
-            data: e.counts,
-            backgroundColor: "#0ea5e9",
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        indexAxis: "y",
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: {
-            beginAtZero: true,
-            grid: { color: "#1e293b" },
-          },
-          y: {
-            ticks: { color: "#cbd5f5", font: { size: 9 } },
-            grid: { display: false },
-          },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `${ctx.parsed.x.toLocaleString()} workers`,
-            },
-          },
-        },
-      },
-    });
+        statsCustomCharts.push(chart);
+      });
+    }
   }
 
   // Barangay factors (per-barangay profile)
@@ -1353,6 +1487,7 @@ function renderStatisticsCharts(stats) {
   ) {
     // Populate dropdown
     barangayFactorsSelect.innerHTML = "";
+
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = "Select barangay...";
@@ -1372,6 +1507,371 @@ function renderStatisticsCharts(stats) {
   }
 }
 
+async function downloadMapImage() {
+  if (!downloadMapBtn || typeof html2canvas === "undefined") {
+    return;
+  }
+
+  try {
+    downloadMapBtn.disabled = true;
+    setStatus("Preparing map image for download…");
+
+    const mapEl = document.getElementById("map");
+    if (!mapEl) {
+      setStatus("Map element not found.", "error");
+      return;
+    }
+
+    const canvas = await html2canvas(mapEl, {
+      useCORS: true,
+      logging: false,
+      scale: 2,
+      backgroundColor: "#020617",
+    });
+
+    const dataUrl = canvas.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = "zamboanga_poverty_map.png";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setStatus("Map image downloaded.");
+  } catch (err) {
+    console.error("Error downloading map image:", err);
+    setStatus("Failed to download map image.", "error");
+  } finally {
+    if (downloadMapBtn) {
+      downloadMapBtn.disabled = false;
+    }
+  }
+}
+
+// ============================================================================
+// REFRESH WORKFLOW
+// ============================================================================
+
+function getDefaultDateRange() {
+  const today = new Date();
+  const endDate = today.toISOString().split('T')[0];
+  const startDate = new Date(today);
+  startDate.setFullYear(startDate.getFullYear() - 1);
+  return {
+    startDate: startDate.toISOString().split('T')[0],
+    endDate: endDate
+  };
+}
+
+function openRefreshModal() {
+  if (!refreshModal) return;
+  
+  // Set default date range (1 year leading up to today)
+  const { startDate, endDate } = getDefaultDateRange();
+  if (refreshStartDateInput) refreshStartDateInput.value = startDate;
+  if (refreshEndDateInput) refreshEndDateInput.value = endDate;
+  
+  // Set max date to today
+  const today = new Date().toISOString().split('T')[0];
+  if (refreshEndDateInput) refreshEndDateInput.max = today;
+  if (refreshStartDateInput) refreshStartDateInput.max = today;
+  
+  // Clear any previous errors/warnings
+  if (refreshErrorEl) {
+    refreshErrorEl.textContent = '';
+    refreshErrorEl.classList.add('hidden');
+  }
+  if (refreshWarningEl) {
+    refreshWarningEl.textContent = '';
+    refreshWarningEl.classList.add('hidden');
+  }
+  
+  refreshModal.classList.remove('hidden');
+  
+  // Set up event listeners
+  if (refreshCancelBtn) {
+    refreshCancelBtn.onclick = () => refreshModal.classList.add('hidden');
+  }
+  if (refreshStartBtn) {
+    refreshStartBtn.onclick = () => initiateRefresh();
+  }
+  
+  // Validate date range on change
+  if (refreshStartDateInput) {
+    refreshStartDateInput.onchange = validateDateRange;
+  }
+  if (refreshEndDateInput) {
+    refreshEndDateInput.onchange = validateDateRange;
+  }
+}
+
+function validateDateRange() {
+  if (!refreshStartDateInput || !refreshEndDateInput || !refreshErrorEl) return true;
+  
+  const startDate = new Date(refreshStartDateInput.value);
+  const endDate = new Date(refreshEndDateInput.value);
+  
+  if (startDate >= endDate) {
+    refreshErrorEl.textContent = 'Start date must be before end date.';
+    refreshErrorEl.classList.remove('hidden');
+    return false;
+  }
+  
+  const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+  if (daysDiff > 365) {
+    refreshErrorEl.textContent = `Date range cannot exceed 365 days. Current: ${daysDiff} days.`;
+    refreshErrorEl.classList.remove('hidden');
+    return false;
+  }
+  
+  refreshErrorEl.classList.add('hidden');
+  return true;
+}
+
+async function initiateRefresh() {
+  if (!validateDateRange()) return;
+  
+  const startDate = refreshStartDateInput?.value;
+  const endDate = refreshEndDateInput?.value;
+  
+  // Store params for potential retry after warning
+  pendingRefreshParams = { startDate, endDate, force: false };
+  
+  // First check for cooldown warning
+  try {
+    const checkRes = await fetch('/api/refresh/check');
+    const checkData = await checkRes.json();
+    
+    if (checkData.should_warn) {
+      // Close refresh modal, show warning modal
+      if (refreshModal) refreshModal.classList.add('hidden');
+      showRefreshWarningModal(checkData.days_since_refresh, checkData.cooldown_days);
+      return;
+    }
+  } catch (err) {
+    console.warn('Could not check refresh status:', err);
+    // Continue with refresh anyway
+  }
+  
+  // No warning needed, proceed with refresh
+  startRefresh(startDate, endDate, false);
+}
+
+function showRefreshWarningModal(daysSinceRefresh, cooldownDays) {
+  if (!refreshWarningModal) return;
+  
+  if (refreshWarningText) {
+    refreshWarningText.textContent = 
+      `A refresh was performed ${daysSinceRefresh} days ago (recommended: every ${cooldownDays} days). ` +
+      `Are you sure you want to refresh again?`;
+  }
+  
+  if (suppressWarningCheckbox) {
+    suppressWarningCheckbox.checked = false;
+  }
+  
+  refreshWarningModal.classList.remove('hidden');
+  
+  if (refreshWarningCancelBtn) {
+    refreshWarningCancelBtn.onclick = () => {
+      refreshWarningModal.classList.add('hidden');
+      pendingRefreshParams = null;
+    };
+  }
+  
+  if (refreshWarningProceedBtn) {
+    refreshWarningProceedBtn.onclick = async () => {
+      // Save preference if checkbox is checked
+      if (suppressWarningCheckbox?.checked) {
+        try {
+          await fetch('/api/refresh/suppress-warning', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ suppress: true })
+          });
+        } catch (err) {
+          console.warn('Could not save preference:', err);
+        }
+      }
+      
+      refreshWarningModal.classList.add('hidden');
+      
+      if (pendingRefreshParams) {
+        startRefresh(
+          pendingRefreshParams.startDate,
+          pendingRefreshParams.endDate,
+          true // force=true to bypass cooldown
+        );
+      }
+    };
+  }
+}
+
+async function startRefresh(startDate, endDate, force) {
+  // Hide other modals
+  if (refreshModal) refreshModal.classList.add('hidden');
+  if (refreshWarningModal) refreshWarningModal.classList.add('hidden');
+  
+  // Show progress modal
+  if (refreshProgressModal) {
+    refreshProgressModal.classList.remove('hidden');
+    updateRefreshProgress('STARTING', 'Initiating refresh...', 0);
+    if (refreshProgressCloseBtn) refreshProgressCloseBtn.classList.add('hidden');
+    if (refreshProgressError) {
+      refreshProgressError.textContent = '';
+      refreshProgressError.classList.add('hidden');
+    }
+  }
+  
+  try {
+    const res = await fetch('/api/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_date: startDate,
+        end_date: endDate,
+        force: force
+      })
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok) {
+      if (data.error === 'cooldown_warning') {
+        // Show warning modal
+        if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+        showRefreshWarningModal(data.days_since_refresh, data.cooldown_days);
+        return;
+      }
+      
+      throw new Error(data.error || `Refresh failed with status ${res.status}`);
+    }
+    
+    if (!data.success) {
+      throw new Error(data.error || 'Unknown refresh error');
+    }
+    
+    // Start polling for progress
+    startRefreshPolling();
+    
+  } catch (err) {
+    console.error('Error starting refresh:', err);
+    showRefreshError(err.message);
+  }
+}
+
+function startRefreshPolling() {
+  // Clear any existing polling
+  if (refreshPollingInterval) {
+    clearInterval(refreshPollingInterval);
+  }
+  
+  // Poll every 2 seconds
+  refreshPollingInterval = setInterval(async () => {
+    try {
+      const res = await fetch('/api/refresh/status');
+      const data = await res.json();
+      
+      const phase = data.phase || 'UNKNOWN';
+      const progress = data.progress || 0;
+      const message = data.message || '';
+      
+      updateRefreshProgress(phase, message, progress);
+      
+      // Check if complete or errored
+      if (phase === 'COMPLETED') {
+        stopRefreshPolling();
+        showRefreshComplete(message);
+      } else if (phase === 'ERROR') {
+        stopRefreshPolling();
+        showRefreshError(data.error || message);
+      }
+      
+    } catch (err) {
+      console.error('Error polling refresh status:', err);
+    }
+  }, 2000);
+}
+
+function stopRefreshPolling() {
+  if (refreshPollingInterval) {
+    clearInterval(refreshPollingInterval);
+    refreshPollingInterval = null;
+  }
+}
+
+function updateRefreshProgress(phase, message, progress) {
+  const phaseLabels = {
+    'STARTED': 'Initializing',
+    'STARTING': 'Initializing',
+    'GEE_EXTRACTION': 'Extracting GEE Data',
+    'GEE_EXTRACTION_DONE': 'GEE Data Complete',
+    'GEE_SKIPPED': 'Using Cached Data',
+    'PREPROCESSING': 'Preprocessing',
+    'PREPROCESSING_DONE': 'Preprocessing Complete',
+    'INFERENCE': 'Running Models',
+    'INFERENCE_DONE': 'Models Complete',
+    'MERGING': 'Merging Results',
+    'MERGING_DONE': 'Merge Complete',
+    'COPYING': 'Copying Files',
+    'COPYING_DONE': 'Files Copied',
+    'COMPLETED': 'Completed',
+    'ERROR': 'Error'
+  };
+  
+  const label = phaseLabels[phase] || phase;
+  
+  if (refreshProgressPhase) refreshProgressPhase.textContent = label;
+  if (refreshProgressPct) refreshProgressPct.textContent = `${progress}%`;
+  if (refreshProgressBar) refreshProgressBar.style.width = `${progress}%`;
+  if (refreshProgressMessage) refreshProgressMessage.textContent = message;
+}
+
+function showRefreshError(errorMessage) {
+  if (refreshProgressError) {
+    refreshProgressError.textContent = errorMessage;
+    refreshProgressError.classList.remove('hidden');
+  }
+  if (refreshProgressPhase) refreshProgressPhase.textContent = 'Error';
+  if (refreshProgressBar) refreshProgressBar.classList.remove('bg-emerald-500');
+  if (refreshProgressBar) refreshProgressBar.classList.add('bg-red-500');
+  if (refreshProgressCloseBtn) refreshProgressCloseBtn.classList.remove('hidden');
+  
+  if (refreshProgressCloseBtn) {
+    refreshProgressCloseBtn.onclick = () => {
+      if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+      // Reset bar color
+      if (refreshProgressBar) {
+        refreshProgressBar.classList.remove('bg-red-500');
+        refreshProgressBar.classList.add('bg-emerald-500');
+      }
+    };
+  }
+}
+
+async function showRefreshComplete(message) {
+  updateRefreshProgress('COMPLETED', message, 100);
+  
+  if (refreshProgressCloseBtn) {
+    refreshProgressCloseBtn.classList.remove('hidden');
+    refreshProgressCloseBtn.textContent = 'Done';
+    refreshProgressCloseBtn.onclick = async () => {
+      if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+      
+      // Reload predictions
+      setStatus('Reloading predictions...');
+      clearAllLayers();
+      await loadPredictions();
+      setStatus('Predictions refreshed successfully!');
+    };
+  }
+}
+
+// Legacy function for backward compatibility
+async function refreshPredictions() {
+  openRefreshModal();
+}
+
 async function loadPredictions() {
   try {
     setStatus("Loading predictions • Zamboanga City");
@@ -1388,11 +1888,14 @@ async function loadPredictions() {
       boundaryGeojson = data.boundary;
       boundaryLayer = L.geoJSON(data.boundary, {
         style: {
-          color: "#e5e7eb",
-          weight: 1,
+          color: "#facc15",
+          weight: 1.5,
+          opacity: 1,
           fillOpacity: 0,
         },
       }).addTo(map);
+
+      boundaryLayer.bringToFront();
 
       try {
         map.fitBounds(boundaryLayer.getBounds(), { padding: [20, 20] });
@@ -1465,7 +1968,6 @@ async function loadPredictions() {
     setupBarangayLayerToggles();
     setupBarangaySearch();
     setupTop5CategoryFilter();
-    setupTabs();
 
     console.log("All setup complete!");
   } catch (err) {
@@ -1474,7 +1976,246 @@ async function loadPredictions() {
   }
 }
 
+function smoothScrollToSelector(selector) {
+  const target = document.querySelector(selector);
+  if (!target) return;
+
+  const rect = target.getBoundingClientRect();
+  const headerOffset = 64; // approximate height of sticky nav
+  const top = window.pageYOffset + rect.top - headerOffset;
+
+  window.scrollTo({
+    top: top < 0 ? 0 : top,
+    behavior: "smooth",
+  });
+}
+
+function setupLandingPageNavigation() {
+  // Only run on landing page where hero section exists
+  const heroSection = document.getElementById("hero");
+  if (!heroSection) return;
+
+  const overviewLink = document.querySelector('a[href="#hero"]');
+  const mapLinks = Array.from(document.querySelectorAll('a[href="#map-section"]'));
+  const aboutLink = document.querySelector('a[href="#about-section"]');
+
+  const attachSmooth = (elOrList, selector) => {
+    if (!elOrList) return;
+    const list = Array.isArray(elOrList) ? elOrList : [elOrList];
+    list.forEach((el) => {
+      if (!el) return;
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        smoothScrollToSelector(selector);
+      });
+    });
+  };
+
+  attachSmooth(overviewLink, "#hero");
+  attachSmooth(mapLinks, "#map-section");
+  attachSmooth(aboutLink, "#about-section");
+}
+
+function setupLandingPageAnimations() {
+  const heroSection = document.getElementById("hero");
+  if (!heroSection) return; // not on landing page
+  const aboutSection = document.getElementById("about-section");
+
+  const sections = [heroSection];
+  if (aboutSection) sections.push(aboutSection);
+
+  if (!("IntersectionObserver" in window)) {
+    // Fallback: just make them visible
+    sections.forEach((el) => {
+      if (!el) return;
+      el.classList.remove("opacity-0", "translate-y-3", "translate-y-4");
+      el.classList.add("opacity-100", "translate-y-0");
+    });
+    return;
+  }
+
+  const observer = new IntersectionObserver(
+    (entries, obs) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const el = entry.target;
+        el.classList.remove("opacity-0", "translate-y-3", "translate-y-4");
+        el.classList.add("opacity-100", "translate-y-0");
+        obs.unobserve(el);
+      });
+    },
+    { threshold: 0.2 },
+  );
+
+  sections.forEach((el) => {
+    if (!el) return;
+    el.classList.add("opacity-0", "translate-y-3", "transition-all", "duration-700", "ease-out");
+    observer.observe(el);
+  });
+}
+
+function setupResetViewControl() {
+  if (!resetViewBtn) return;
+  resetViewBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    resetMapView();
+  });
+}
+
+function resetMapView() {
+  try {
+    if (boundaryLayer && typeof boundaryLayer.getBounds === "function") {
+      map.fitBounds(boundaryLayer.getBounds(), { padding: [20, 20] });
+      return;
+    }
+
+    if (boundaryGeojson) {
+      const tmp = L.geoJSON(boundaryGeojson);
+      map.fitBounds(tmp.getBounds(), { padding: [20, 20] });
+      map.removeLayer(tmp);
+      return;
+    }
+
+    // Fallback: approximate center of Zamboanga City
+    map.setView([6.9214, 122.079], 11);
+  } catch (e) {
+    console.error("Error resetting map view:", e);
+  }
+}
+
+function setupFeedbackForm() {
+  const heroSection = document.getElementById("hero");
+  if (!heroSection) return; // only on landing page
+
+  if (!feedbackEmailInput || !feedbackMessageInput || !feedbackSubmitBtn) return;
+
+  const validateEmail = (value) => {
+    if (!value) return false;
+    return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
+  };
+
+  const setStatus = (text, tone = "info") => {
+    if (!feedbackStatusEl) return;
+    feedbackStatusEl.textContent = text;
+    if (tone === "error") {
+      feedbackStatusEl.classList.remove("text-slate-400", "text-emerald-400");
+      feedbackStatusEl.classList.add("text-red-400");
+    } else if (tone === "success") {
+      feedbackStatusEl.classList.remove("text-slate-400", "text-red-400");
+      feedbackStatusEl.classList.add("text-emerald-400");
+    } else {
+      feedbackStatusEl.classList.remove("text-emerald-400", "text-red-400");
+      feedbackStatusEl.classList.add("text-slate-400");
+    }
+  };
+
+  feedbackSubmitBtn.addEventListener("click", async (e) => {
+    e.preventDefault();
+
+    const email = feedbackEmailInput.value.trim();
+    const barangay = feedbackBarangayInput ? feedbackBarangayInput.value.trim() : "";
+    const message = feedbackMessageInput.value.trim();
+
+    if (!validateEmail(email)) {
+      setStatus("Please enter a valid email address.", "error");
+      return;
+    }
+    if (!message) {
+      setStatus("Please enter a message.", "error");
+      return;
+    }
+
+    setStatus("Sending message…", "info");
+    feedbackSubmitBtn.disabled = true;
+
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, barangay, message }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || data.success === false) {
+        const msg = data && data.error ? data.error : `Failed to send message (status ${res.status}).`;
+        setStatus(msg, "error");
+        return;
+      }
+
+      if (feedbackEmailInput) feedbackEmailInput.value = "";
+      if (feedbackBarangayInput) feedbackBarangayInput.value = "";
+      if (feedbackMessageInput) feedbackMessageInput.value = "";
+
+      setStatus("Thank you. Your message has been received.", "success");
+    } catch (err) {
+      console.error("Error submitting feedback", err);
+      setStatus("Failed to send message. Please try again later.", "error");
+    } finally {
+      feedbackSubmitBtn.disabled = false;
+    }
+  });
+}
+
+async function fetchPeopleMessages() {
+  if (!peopleListContainer) return;
+
+  peopleListContainer.textContent = "Loading messages…";
+
+  try {
+    const res = await fetch("/api/feedback");
+    if (!res.ok) {
+      if (res.status === 403) {
+        peopleListContainer.textContent = "Sign in as an admin to view messages.";
+        return;
+      }
+      peopleListContainer.textContent = `Failed to load messages (status ${res.status}).`;
+      return;
+    }
+
+    const data = await res.json();
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+
+    if (!messages.length) {
+      peopleListContainer.textContent = "No messages submitted yet.";
+      return;
+    }
+
+    const items = messages.map((m) => {
+      const email = m.email || "Unknown email";
+      const barangay = m.barangay || "Unspecified barangay";
+      const created = m.created_at || "";
+      const body = m.message || "";
+      const esc = (str) => String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return `
+        <div class="border border-slate-800 bg-slate-900/70 rounded-xl px-3 py-2.5 shadow-sm">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="flex flex-col">
+              <span class="text-[11px] font-semibold text-slate-100">${esc(email)}</span>
+              <span class="text-[10px] text-slate-400">${esc(barangay)}</span>
+            </div>
+            <span class="text-[10px] text-slate-500 whitespace-nowrap">${esc(created)}</span>
+          </div>
+          <p class="text-[11px] text-slate-200 leading-snug whitespace-pre-wrap">${esc(body)}</p>
+        </div>
+      `;
+    });
+
+    peopleListContainer.innerHTML = items.join("");
+  } catch (err) {
+    console.error("Failed to load people messages", err);
+    peopleListContainer.textContent = "Failed to load messages.";
+  }
+}
+
 setupTabs();
+setupAdminControls();
+setupLandingPageNavigation();
+setupLandingPageAnimations();
+setupResetViewControl();
+setupFeedbackForm();
 loadPredictions();
 
 // Load statistics for the Statistics tab
