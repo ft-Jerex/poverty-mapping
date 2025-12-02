@@ -455,66 +455,87 @@ if road_access is not None:
     print("OK: Road accessibility computed")
 
 # ============================================================================
-# CREATE GRID (using same method as CNN for consistency)
+# LOAD AUTHORITATIVE GRID (use existing 1724-cell grid)
 # ============================================================================
-print("\n=== CREATING GRID ===")
-update_status("CREATING_GRID", "Creating ~1km grid (UTM-based for accuracy)")
+print("\n=== LOADING AUTHORITATIVE GRID ===")
+update_status("LOADING_GRID", "Loading authoritative 1724-cell grid")
 
-def create_1km_grid_ee(roi_fc, shapefile_gdf, grid_size_m=1000, utm_epsg=32651):
+def load_authoritative_grid_ee():
     """
-    Create 1km grid using UTM projection (same method as CNN pipeline).
-    This ensures grid cells are exactly 1km x 1km and match the CNN grid.
+    Load the authoritative grid from shapefile/grid_cells.geojson.
+    This ensures we use exactly the same 1724 cells as other systems.
     """
-    from shapely.geometry import box
+    grid_path = ASSETS_DIR / "shapefile" / "grid_cells.geojson"
     
-    # Project to UTM for accurate 1km cells
-    study_area_utm = shapefile_gdf.to_crs(epsg=utm_epsg)
-    minx, miny, maxx, maxy = study_area_utm.total_bounds
+    if not grid_path.exists():
+        raise FileNotFoundError(f"Authoritative grid not found at {grid_path}")
     
-    cols = int(np.ceil((maxx - minx) / grid_size_m))
-    rows = int(np.ceil((maxy - miny) / grid_size_m))
+    # Load grid
+    grid_gdf = gpd.read_file(grid_path)
+    print(f"Loaded {len(grid_gdf)} grid cells from authoritative source")
     
-    print(f"Grid dimensions: {cols} columns × {rows} rows")
-    print(f"UTM bounds: ({minx:.0f}, {miny:.0f}) to ({maxx:.0f}, {maxy:.0f})")
+    # Ensure WGS84
+    if grid_gdf.crs != "EPSG:4326":
+        grid_gdf = grid_gdf.to_crs("EPSG:4326")
     
-    # Create grid cells
+    # Convert to EE FeatureCollection
     grid_features = []
-    for i in range(cols):
-        for j in range(rows):
-            cell = box(minx + i*grid_size_m, miny + j*grid_size_m,
-                       minx + (i+1)*grid_size_m, miny + (j+1)*grid_size_m)
-            if study_area_utm.intersects(cell).any():
-                # Convert cell to WGS84 for GEE
-                cell_gdf = gpd.GeoDataFrame(geometry=[cell], crs=f"EPSG:{utm_epsg}")
-                cell_wgs84 = cell_gdf.to_crs(epsg=4326).geometry.iloc[0]
-                
-                # Create EE feature
-                coords = list(cell_wgs84.exterior.coords)
-                ee_geom = ee.Geometry.Polygon([coords])
-                
-                grid_features.append(ee.Feature(ee_geom, {
-                    'x_idx': i,
-                    'y_idx': j,
-                    'grid_id': f"{i}_{j}",
-                    'cell_id': f"cell_{i:04d}_{j:04d}"
-                }))
+    for idx, row in grid_gdf.iterrows():
+        geom = row.geometry
+        
+        # Extract properties - handle different possible column names
+        props = {}
+        if hasattr(row, 'cell_id'):
+            props['cell_id'] = row.cell_id
+        elif 'cell_id' in grid_gdf.columns:
+            props['cell_id'] = row['cell_id']
+        else:
+            props['cell_id'] = f"cell_{idx:04d}"
+            
+        # Extract x_idx, y_idx from cell_id if available
+        if 'cell_id' in props and props['cell_id'].startswith('cell_'):
+            parts = props['cell_id'].replace('cell_', '').split('_')
+            if len(parts) == 2:
+                try:
+                    props['x_idx'] = int(parts[0])
+                    props['y_idx'] = int(parts[1])
+                    props['grid_id'] = f"{props['x_idx']}_{props['y_idx']}"
+                except ValueError:
+                    pass
+        
+        # Fallback grid_id
+        if 'grid_id' not in props:
+            props['grid_id'] = f"grid_{idx}"
+        
+        # Create EE geometry
+        coords = list(geom.exterior.coords)
+        ee_geom = ee.Geometry.Polygon([coords])
+        
+        grid_features.append(ee.Feature(ee_geom, props))
     
-    print(f"Created {len(grid_features)} grid cells intersecting ROI")
+    print(f"Converted {len(grid_features)} grid cells to Earth Engine format")
     return ee.FeatureCollection(grid_features)
 
-# Create grid using UTM-based method (matches CNN grid)
-grid = create_1km_grid_ee(roi, gdf_wgs84, grid_size_m=1000, utm_epsg=32651)
+# Load authoritative grid (1724 cells)
+grid = load_authoritative_grid_ee()
 
 # Diagnostic: Check grid statistics
 print("\n=== GRID DIAGNOSTICS ===")
 grid_size = grid.size().getInfo()
-print(f"Total grid cells after filtering: {grid_size}")
+print(f"Authoritative grid cells loaded: {grid_size}")
 print(f"ROI area: {total_area_km2:.2f} km²")
-print(f"Expected cells (~1km² each): ~{total_area_km2:.0f}")
-print(f"Actual/Expected ratio: {grid_size/total_area_km2:.2f}x")
+print(f"Expected cells (target): 1724")
+print(f"Grid coverage: {grid_size}/1724 = {grid_size/1724:.1%}")
 
-print("\nOK: Grid created (UTM-based, matches CNN grid)")
-update_status("GRID_CREATED", "Grid created successfully")
+if grid_size == 1724:
+    print("✓ Perfect match with target 1724 cells!")
+elif grid_size == 1716:
+    print("⚠ Using CNN grid (1716 cells) - will need backfill to reach 1724")
+else:
+    print(f"⚠ Unexpected grid size: {grid_size}")
+
+print(f"\nOK: Grid loaded from authoritative source")
+update_status("GRID_LOADED", "Authoritative grid loaded successfully")
 
 # ============================================================================
 # FAST EXTRACTION USING sampleRegions (MULTI-SAMPLE)

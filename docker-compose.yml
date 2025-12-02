@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  poverty-mapping:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-your-secret-key-here}
+      - FLASK_ENV=production
+    volumes:
+      # Mount data directories for persistence
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./assets:/app/assets
+      - ./googleEarthExports:/app/googleEarthExports
+      # Mount Google Earth Engine credentials if available
+      - ${GEE_CREDENTIALS_PATH:-/dev/null}:/app/gee-credentials.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Add reverse proxy with SSL
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - poverty-mapping
+    restart: unless-stopped

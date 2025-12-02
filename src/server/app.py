@@ -2105,5 +2105,39 @@ def api_refresh_rollback(refresh_id: int) -> object:
         return jsonify({"success": False, "error": f"Rollback failed: {e}"}), 500
 
 
+@app.route("/health", methods=["GET"])
+def health_check() -> object:
+    """Health check endpoint for deployment monitoring."""
+    try:
+        # Check database connectivity
+        conn = _get_db_connection()
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+        
+        # Check required files exist
+        required_files = [
+            DATA_DIR / "users.db",
+            SHAPEFILE_PATH,
+        ]
+        missing_files = [f for f in required_files if not f.exists()]
+        
+        status = {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "version": "1.0.0",
+            "database": "connected",
+            "required_files": "present" if not missing_files else f"missing: {missing_files}"
+        }
+        
+        return jsonify(status), 200
+        
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }), 500
+
+
 if __name__ == "__main__":  # pragma: no cover
     app.run(host="0.0.0.0", port=8000, debug=False)
