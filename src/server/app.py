@@ -5,6 +5,9 @@ import json
 import os
 import re
 import sqlite3
+import sys
+import threading
+from datetime import datetime, timedelta
 
 import pandas as pd
 import geopandas as gpd
@@ -21,6 +24,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
+# Add project root to Python path so we can import from src
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 STATIC_DIR = ROOT / "static"
 DATA_DIR = ROOT / "data"
 SHAPEFILE_PATH = DATA_DIR / "shapefile" / "zc04AdminBoundaries_gcs.shp"
@@ -41,6 +48,12 @@ SHEETS_SUMMARY_PATH = CSV_DIR / "sheets_saved_summary.csv"
 SHEETS_CONFIG_PATH = CSV_DIR / "sheets_chart_config.json"
 
 USERS_DB_PATH = DATA_DIR / "users.db"
+
+# Refresh pipeline configuration
+POVMAP_BACKEND_DIR = Path(os.getenv("POVMAP_BACKEND_DIR", r"C:\Users\Admin\povmapbackend"))
+MODELS_DIR = ROOT / "models"
+REFRESH_COOLDOWN_DAYS = 90  # Warn if refresh less than this many days ago
+MAX_DATE_RANGE_DAYS = 365  # Maximum date range for data collection
 
 load_dotenv()
 
@@ -80,6 +93,33 @@ def _init_users_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS refresh_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                status TEXT NOT NULL DEFAULT 'running',
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                triggered_by TEXT,
+                error_message TEXT,
+                predictions_backup_path TEXT,
+                elapsed_seconds REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                suppress_refresh_warning INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -97,20 +137,7 @@ def _get_current_user() -> dict | None:
 def _is_valid_email(value: str) -> bool:
     if not value:
         return False
-    if len(value) > 254:
-        return False
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value))
-
-
-def _normalize_username(value: str) -> str:
-    username = (value or "").strip()
-    if not username:
-        return ""
-    if len(username) > 64:
-        return ""
-    if not re.match(r"^[A-Za-z0-9_.-]+$", username):
-        return ""
-    return username
 
 
 @app.route("/")
@@ -142,8 +169,9 @@ def auth_register() -> object:
     # Only allow an authenticated admin to create new users
     if _get_current_user() is None:
         return jsonify({"success": False, "error": "Forbidden"}), 403
+
     payload = request.get_json(silent=True) or {}
-    username = _normalize_username(payload.get("username") or "")
+    username = (payload.get("username") or "").strip()
     password = payload.get("password") or ""
 
     if not username or not password:
@@ -172,7 +200,7 @@ def auth_register() -> object:
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login() -> object:
-    username = _normalize_username(request.form.get("username") or "")
+    username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
 
     if not username or not password:
@@ -255,7 +283,7 @@ def _prepare_data() -> dict:
 
     grid_gdf = gpd.read_file(GRID_GEOJSON_PATH)
     merged = pd.read_csv(MERGED_PREDICTIONS_PATH)
-    gdf = grid_gdf.merge(merged, on="grid_id", how="inner")
+    gdf = grid_gdf.merge(merged, on="grid_id", how="left")
 
     if roi_gdf.crs and gdf.crs and roi_gdf.crs != gdf.crs:
         gdf = gdf.to_crs(roi_gdf.crs)
@@ -1593,10 +1621,7 @@ def api_feedback_create() -> object:
     payload = request.get_json(silent=True) or {}
     email = (payload.get("email") or "").strip().lower()
     message = (payload.get("message") or "").strip()
-    barangay_raw = (payload.get("barangay") or "").strip()
-    if barangay_raw and len(barangay_raw) > 128:
-        barangay_raw = barangay_raw[:128]
-    barangay = barangay_raw or None
+    barangay = (payload.get("barangay") or "").strip() or None
 
     if not _is_valid_email(email):
         return (
@@ -1665,31 +1690,418 @@ def api_feedback_list() -> object:
     return jsonify({"success": True, "messages": rows})
 
 
+# ============================================================================
+# REFRESH PIPELINE ENDPOINTS
+# ============================================================================
+
+def _get_last_refresh() -> dict | None:
+    """Get the most recent successful refresh record."""
+    conn = _get_db_connection()
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, started_at, completed_at, start_date, end_date, triggered_by, elapsed_seconds
+            FROM refresh_history
+            WHERE status = 'completed'
+            ORDER BY completed_at DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if row:
+            return dict(row)
+    finally:
+        conn.close()
+    return None
+
+
+def _create_predictions_backup() -> str | None:
+    """Create a backup of current prediction files before refresh."""
+    backup_dir = DATA_DIR / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"predictions_backup_{timestamp}"
+    backup_path.mkdir(exist_ok=True)
+    
+    import shutil
+    files_to_backup = [
+        MERGED_PREDICTIONS_PATH,
+        GRID_GEOJSON_PATH,
+        CNN_PRED_PATH,
+    ]
+    
+    backed_up = False
+    for f in files_to_backup:
+        if f.exists():
+            shutil.copy2(f, backup_path / f.name)
+            backed_up = True
+    
+    return str(backup_path) if backed_up else None
+
+
+def _get_user_preferences(username: str) -> dict:
+    """Get user preferences including refresh warning suppression."""
+    conn = _get_db_connection()
+    try:
+        cur = conn.execute(
+            "SELECT suppress_refresh_warning FROM user_preferences WHERE username = ?",
+            (username,)
+        )
+        row = cur.fetchone()
+        if row:
+            return {"suppress_refresh_warning": bool(row["suppress_refresh_warning"])}
+    finally:
+        conn.close()
+    return {"suppress_refresh_warning": False}
+
+
+def _set_suppress_refresh_warning(username: str, suppress: bool) -> None:
+    """Set user preference to suppress refresh warning."""
+    conn = _get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO user_preferences (username, suppress_refresh_warning, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(username) DO UPDATE SET
+                suppress_refresh_warning = excluded.suppress_refresh_warning,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (username, 1 if suppress else 0)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@app.route("/api/refresh/check", methods=["GET"])
+def api_refresh_check() -> object:
+    """Check if refresh should warn about recent refresh."""
+    user = _get_current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    
+    prefs = _get_user_preferences(user["username"])
+    last_refresh = _get_last_refresh()
+    
+    should_warn = False
+    days_since_refresh = None
+    
+    if last_refresh and not prefs.get("suppress_refresh_warning"):
+        completed_at = datetime.fromisoformat(last_refresh["completed_at"].replace("Z", "+00:00"))
+        days_since = (datetime.now() - completed_at.replace(tzinfo=None)).days
+        if days_since < REFRESH_COOLDOWN_DAYS:
+            should_warn = True
+            days_since_refresh = days_since
+    
+    return jsonify({
+        "success": True,
+        "should_warn": should_warn,
+        "days_since_refresh": days_since_refresh,
+        "cooldown_days": REFRESH_COOLDOWN_DAYS,
+        "last_refresh": last_refresh,
+        "suppress_warning": prefs.get("suppress_refresh_warning", False),
+    })
+
+
+@app.route("/api/refresh/suppress-warning", methods=["POST"])
+def api_refresh_suppress_warning() -> object:
+    """Suppress the refresh warning for the current user."""
+    user = _get_current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    
+    payload = request.get_json(silent=True) or {}
+    suppress = payload.get("suppress", True)
+    
+    _set_suppress_refresh_warning(user["username"], suppress)
+    
+    return jsonify({"success": True, "suppress_warning": suppress})
+
+
 @app.route("/api/refresh", methods=["POST"])
 def api_refresh() -> object:
     """Trigger a refresh of prediction layers from upstream data sources.
 
-    This is a safe placeholder hook for the full GEE + WorldPop + OSM + model
-    pipeline. In production you would call the orchestration code here, e.g.:
-
-      - Run the quarterly GEE extraction pipeline
-      - Pull / preprocess WorldPop & OSM covariates
-      - Regenerate model features and run CatBoost/RF/CNN inference
-      - Write updated CSV/GeoJSON artifacts under data/
-
-    For now, this endpoint simply reports success so the UI wiring can be
-    validated end-to-end.
+    This endpoint:
+    1. Validates admin authentication
+    2. Validates date range parameters
+    3. Creates backup of current predictions
+    4. Starts the refresh pipeline in background
+    5. Records refresh in history table
+    
+    Request JSON:
+    {
+        "start_date": "YYYY-MM-DD",  // Optional, defaults to 1 year ago
+        "end_date": "YYYY-MM-DD",    // Optional, defaults to today
+        "skip_gee": false,           // Optional, skip GEE extraction
+        "force": false               // Optional, bypass cooldown warning
+    }
     """
+    # Check authentication
+    user = _get_current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Unauthorized. Admin login required."}), 401
+    
+    # Parse request
+    payload = request.get_json(silent=True) or {}
+    
+    # Validate and parse dates
+    end_date_str = payload.get("end_date")
+    start_date_str = payload.get("start_date")
+    skip_gee = payload.get("skip_gee", False)
+    force = payload.get("force", False)
+    
+    # Default end date is today
+    if end_date_str:
+        try:
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid end_date format. Use YYYY-MM-DD."}), 400
+    else:
+        end_date = datetime.now()
+        end_date_str = end_date.strftime("%Y-%m-%d")
+    
+    # Default start date is 1 year before end date
+    if start_date_str:
+        try:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid start_date format. Use YYYY-MM-DD."}), 400
+    else:
+        start_date = end_date - timedelta(days=365)
+        start_date_str = start_date.strftime("%Y-%m-%d")
+    
+    # Validate date range
+    if start_date >= end_date:
+        return jsonify({"success": False, "error": "start_date must be before end_date."}), 400
+    
+    date_range_days = (end_date - start_date).days
+    if date_range_days > MAX_DATE_RANGE_DAYS:
+        return jsonify({
+            "success": False, 
+            "error": f"Date range cannot exceed {MAX_DATE_RANGE_DAYS} days. Requested: {date_range_days} days."
+        }), 400
+    
+    if end_date > datetime.now():
+        return jsonify({"success": False, "error": "end_date cannot be in the future."}), 400
+    
+    # Check if refresh is already running
     try:
-        # Placeholder: no-op refresh.
-        return jsonify(
-            {
-                "success": True,
-                "message": "Refresh hook invoked (placeholder – plug in full pipeline here).",
-            }
+        from src.workflow.refresh_pipeline import is_refresh_running, run_refresh_async, get_status
+        
+        if is_refresh_running():
+            status = get_status()
+            return jsonify({
+                "success": False,
+                "error": "A refresh is already in progress.",
+                "current_status": status
+            }), 409
+    except ImportError as e:
+        return jsonify({"success": False, "error": f"Refresh module not available: {e}"}), 500
+    
+    # Check cooldown (unless forced)
+    if not force:
+        last_refresh = _get_last_refresh()
+        if last_refresh:
+            completed_at = datetime.fromisoformat(last_refresh["completed_at"].replace("Z", "+00:00"))
+            days_since = (datetime.now() - completed_at.replace(tzinfo=None)).days
+            if days_since < REFRESH_COOLDOWN_DAYS:
+                prefs = _get_user_preferences(user["username"])
+                if not prefs.get("suppress_refresh_warning"):
+                    return jsonify({
+                        "success": False,
+                        "error": "cooldown_warning",
+                        "days_since_refresh": days_since,
+                        "cooldown_days": REFRESH_COOLDOWN_DAYS,
+                        "message": f"Last refresh was {days_since} days ago. Use force=true to proceed."
+                    }), 429
+    
+    # Create backup before refresh
+    backup_path = _create_predictions_backup()
+    
+    # Record refresh start in database
+    conn = _get_db_connection()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO refresh_history (status, start_date, end_date, triggered_by, predictions_backup_path)
+            VALUES ('running', ?, ?, ?, ?)
+            """,
+            (start_date_str, end_date_str, user["username"], backup_path)
         )
-    except Exception as exc:  # pragma: no cover
+        refresh_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    
+    # Start the refresh pipeline
+    try:
+        thread = run_refresh_async(
+            povmap_backend_dir=str(POVMAP_BACKEND_DIR),
+            webapp_data_dir=str(DATA_DIR),
+            models_dir=str(MODELS_DIR),
+            start_date=start_date_str,
+            end_date=end_date_str,
+            skip_gee=skip_gee,
+        )
+        
+        if thread is None:
+            return jsonify({
+                "success": False, 
+                "error": "Failed to start refresh - another refresh may be running."
+            }), 409
+        
+        # Start a thread to monitor completion and update database
+        def _monitor_completion():
+            thread.join()
+            status = get_status()
+            conn = _get_db_connection()
+            try:
+                if status.get("phase") == "COMPLETED":
+                    conn.execute(
+                        """
+                        UPDATE refresh_history 
+                        SET status = 'completed', completed_at = CURRENT_TIMESTAMP, elapsed_seconds = ?
+                        WHERE id = ?
+                        """,
+                        (status.get("elapsed_seconds", 0), refresh_id)
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE refresh_history 
+                        SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = ?
+                        WHERE id = ?
+                        """,
+                        (status.get("error", "Unknown error"), refresh_id)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        
+        monitor_thread = threading.Thread(target=_monitor_completion, daemon=True)
+        monitor_thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Refresh started for {start_date_str} to {end_date_str}",
+            "refresh_id": refresh_id,
+            "backup_path": backup_path,
+        })
+        
+    except Exception as exc:
+        # Update database with failure
+        conn = _get_db_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE refresh_history 
+                SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = ?
+                WHERE id = ?
+                """,
+                (str(exc), refresh_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/refresh/status", methods=["GET"])
+def api_refresh_status() -> object:
+    """Get the current status of an ongoing refresh."""
+    try:
+        from src.workflow.refresh_pipeline import get_status, is_refresh_running
+        
+        status = get_status()
+        status["is_running"] = is_refresh_running()
+        
+        return jsonify({"success": True, **status})
+    except ImportError:
+        return jsonify({
+            "success": True,
+            "phase": "IDLE",
+            "message": "Refresh module not loaded",
+            "is_running": False
+        })
+
+
+@app.route("/api/refresh/history", methods=["GET"])
+def api_refresh_history() -> object:
+    """Get refresh history."""
+    user = _get_current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    
+    limit = request.args.get("limit", 10, type=int)
+    
+    conn = _get_db_connection()
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, started_at, completed_at, status, start_date, end_date, 
+                   triggered_by, error_message, elapsed_seconds
+            FROM refresh_history
+            ORDER BY started_at DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+    
+    return jsonify({"success": True, "history": rows})
+
+
+@app.route("/api/refresh/rollback/<int:refresh_id>", methods=["POST"])
+def api_refresh_rollback(refresh_id: int) -> object:
+    """Rollback to predictions from before a specific refresh."""
+    user = _get_current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    
+    conn = _get_db_connection()
+    try:
+        cur = conn.execute(
+            "SELECT predictions_backup_path FROM refresh_history WHERE id = ?",
+            (refresh_id,)
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    
+    if not row:
+        return jsonify({"success": False, "error": "Refresh record not found."}), 404
+    
+    backup_path = row["predictions_backup_path"]
+    if not backup_path:
+        return jsonify({"success": False, "error": "No backup available for this refresh."}), 404
+    
+    backup_dir = Path(backup_path)
+    if not backup_dir.exists():
+        return jsonify({"success": False, "error": "Backup directory not found."}), 404
+    
+    import shutil
+    
+    restored = []
+    try:
+        # Restore each backed up file
+        for backup_file in backup_dir.iterdir():
+            target = DATA_DIR / backup_file.name
+            shutil.copy2(backup_file, target)
+            restored.append(str(target))
+        
+        return jsonify({
+            "success": True,
+            "message": f"Rolled back to backup from refresh #{refresh_id}",
+            "restored_files": restored
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Rollback failed: {e}"}), 500
 
 
 if __name__ == "__main__":  # pragma: no cover

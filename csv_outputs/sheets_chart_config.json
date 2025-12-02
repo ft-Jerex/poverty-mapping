@@ -4,7 +4,9 @@
     "x_column": "Barangays",
     "y_columns": [
       "Total Assessed Households"
-    ]
+    ],
+    "row_mode": "top5",
+    "expose_in_statistics": false
   },
   "Nature of Employment": {
     "chart_type": "bar",

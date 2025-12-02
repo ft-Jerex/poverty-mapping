@@ -407,6 +407,131 @@
     </div>
   </div>
 
+  <!-- Refresh Modal -->
+  <div
+    id="refresh-modal"
+    class="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm hidden"
+  >
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
+      <h2 class="text-sm font-semibold text-slate-100 mb-2">Refresh Predictions</h2>
+      <p class="text-xs text-slate-300 mb-4">
+        Fetch new geospatial data from Google Earth Engine and regenerate poverty predictions.
+      </p>
+      
+      <!-- Date Range Selection -->
+      <div class="space-y-3 text-xs mb-4">
+        <div>
+          <label for="refresh-start-date" class="block text-slate-300 mb-1">Start Date</label>
+          <input
+            id="refresh-start-date"
+            type="date"
+            class="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+          />
+        </div>
+        <div>
+          <label for="refresh-end-date" class="block text-slate-300 mb-1">End Date</label>
+          <input
+            id="refresh-end-date"
+            type="date"
+            class="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+          />
+        </div>
+        <p class="text-slate-500 text-[10px]">
+          Max range: 1 year. Default: last 365 days.
+        </p>
+      </div>
+      
+      <p id="refresh-error" class="mt-2 text-xs text-red-400 hidden"></p>
+      <p id="refresh-warning" class="mt-2 text-xs text-amber-400 hidden"></p>
+      
+      <div class="flex justify-end gap-2 mt-4 text-xs">
+        <button
+          id="refresh-cancel-btn"
+          class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          id="refresh-start-btn"
+          class="px-3 py-1.5 rounded-full bg-emerald-500 text-slate-900 border border-emerald-400 hover:bg-emerald-400 transition-colors font-semibold"
+        >
+          Start Refresh
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Refresh Progress Modal -->
+  <div
+    id="refresh-progress-modal"
+    class="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm hidden"
+  >
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
+      <h2 class="text-sm font-semibold text-slate-100 mb-4">Refreshing Predictions</h2>
+      
+      <!-- Progress Bar -->
+      <div class="mb-4">
+        <div class="flex justify-between text-xs text-slate-300 mb-1">
+          <span id="refresh-progress-phase">Initializing...</span>
+          <span id="refresh-progress-pct">0%</span>
+        </div>
+        <div class="w-full bg-slate-700 rounded-full h-2">
+          <div
+            id="refresh-progress-bar"
+            class="bg-emerald-500 h-2 rounded-full transition-all duration-300"
+            style="width: 0%"
+          ></div>
+        </div>
+      </div>
+      
+      <p id="refresh-progress-message" class="text-xs text-slate-300 mb-4">
+        Starting data refresh...
+      </p>
+      
+      <p id="refresh-progress-error" class="mt-2 text-xs text-red-400 hidden"></p>
+      
+      <div class="flex justify-end gap-2 mt-4 text-xs">
+        <button
+          id="refresh-progress-close-btn"
+          class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors hidden"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Refresh Cooldown Warning Modal -->
+  <div
+    id="refresh-warning-modal"
+    class="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm hidden"
+  >
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+      <h2 class="text-sm font-semibold text-amber-400 mb-2">⚠️ Recent Refresh Detected</h2>
+      <p id="refresh-warning-text" class="text-xs text-slate-300 mb-4">
+        A refresh was performed recently. Are you sure you want to refresh again?
+      </p>
+      <label class="flex items-center gap-2 text-xs text-slate-300 mb-4">
+        <input id="suppress-warning-checkbox" type="checkbox" class="accent-emerald-500" />
+        <span>Don't show this warning again</span>
+      </label>
+      <div class="flex justify-end gap-2 text-xs">
+        <button
+          id="refresh-warning-cancel-btn"
+          class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          id="refresh-warning-proceed-btn"
+          class="px-3 py-1.5 rounded-full bg-amber-500 text-slate-900 border border-amber-400 hover:bg-amber-400 transition-colors font-semibold"
+        >
+          Proceed Anyway
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="

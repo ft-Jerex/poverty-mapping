@@ -80,6 +80,33 @@ const feedbackMessageInput = document.getElementById("feedback-message");
 const feedbackStatusEl = document.getElementById("feedback-status");
 const feedbackSubmitBtn = document.getElementById("feedback-submit-btn");
 
+// Refresh modal elements
+const refreshModal = document.getElementById("refresh-modal");
+const refreshStartDateInput = document.getElementById("refresh-start-date");
+const refreshEndDateInput = document.getElementById("refresh-end-date");
+const refreshErrorEl = document.getElementById("refresh-error");
+const refreshWarningEl = document.getElementById("refresh-warning");
+const refreshCancelBtn = document.getElementById("refresh-cancel-btn");
+const refreshStartBtn = document.getElementById("refresh-start-btn");
+
+const refreshProgressModal = document.getElementById("refresh-progress-modal");
+const refreshProgressPhase = document.getElementById("refresh-progress-phase");
+const refreshProgressPct = document.getElementById("refresh-progress-pct");
+const refreshProgressBar = document.getElementById("refresh-progress-bar");
+const refreshProgressMessage = document.getElementById("refresh-progress-message");
+const refreshProgressError = document.getElementById("refresh-progress-error");
+const refreshProgressCloseBtn = document.getElementById("refresh-progress-close-btn");
+
+const refreshWarningModal = document.getElementById("refresh-warning-modal");
+const refreshWarningText = document.getElementById("refresh-warning-text");
+const suppressWarningCheckbox = document.getElementById("suppress-warning-checkbox");
+const refreshWarningCancelBtn = document.getElementById("refresh-warning-cancel-btn");
+const refreshWarningProceedBtn = document.getElementById("refresh-warning-proceed-btn");
+
+// Refresh state
+let refreshPollingInterval = null;
+let pendingRefreshParams = null;
+
 const modelLayers = {
   catboost: null,
   rf: null,
@@ -122,28 +149,28 @@ function formatRange(min, max) {
 }
 
 function updateLegend(modelKey) {
-  // Use fixed, interpretable percentage bands for the legend instead of
-  // dynamic quartile ranges so that colors are consistent and comparable
-  // across models and time.
-  if (!legendContainer) return;
-
+  if (!legendContainer || !quartileRanges[modelKey]) return;
+  const ranges = quartileRanges[modelKey];
+  // Find the legend color blocks
   const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
-  if (!legendBlocks.length) return;
-
-  for (let i = 0; i < CATEGORY_ORDER.length && i < legendBlocks.length; ++i) {
-    const label = CATEGORY_ORDER[i];
-    const band = POVERTY_BANDS.find((b) => b.label === label);
+  if (legendBlocks.length !== 4) return;
+  for (let i = 0; i < 4; ++i) {
+    const range = ranges[i];
     const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
-    if (!band || !labelSpan) continue;
-
-    let text;
-    if (band.label === "Poorest") {
-      // Open-ended top band
-      text = `Poorest (≥ ${(band.min * 100).toFixed(1)}%)`;
-    } else {
-      text = `${band.label} (${formatRange(band.min * 100, band.max * 100)})`;
+    if (labelSpan && range) {
+      // Update label to include value range
+      let labelText = "";
+      if (range.label === "Not poor") {
+        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Lower-middle") {
+        labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Upper-middle") {
+        labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
+      } else if (range.label === "Poorest") {
+        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
+      }
+      labelSpan.textContent = labelText;
     }
-    labelSpan.textContent = text;
   }
 }
 
@@ -212,35 +239,6 @@ function getQuartileField(modelKey) {
 
 const CATEGORY_ORDER = ["Not poor", "Lower-middle", "Upper-middle", "Poorest"];
 
-// Fixed poverty-percentage bands used everywhere (legend, tiles, charts).
-// Values are shares in 0–1 space; helper below also accepts 0–100 inputs.
-const POVERTY_BANDS = [
-  { label: "Not poor", min: 0.0, max: 0.3 }, // 0–30%
-  { label: "Lower-middle", min: 0.3, max: 0.4 }, // 30–40%
-  { label: "Upper-middle", min: 0.4, max: 0.6 }, // 40–60%
-  { label: "Poorest", min: 0.6, max: 1.01 }, // 60% and above
-];
-
-function normalizeShare(value) {
-  if (value === null || value === undefined) return null;
-  const num = Number(value);
-  if (!Number.isFinite(num) || num < 0) return null;
-  // Support either 0–1 or 0–100 inputs; anything above 1 is treated as percent.
-  if (num <= 1.000001) return num;
-  return num / 100;
-}
-
-function classifyPovertyShare(raw) {
-  const share = normalizeShare(raw);
-  if (share === null) return null;
-  for (const band of POVERTY_BANDS) {
-    if (share >= band.min && share < band.max) {
-      return band.label;
-    }
-  }
-  return "Poorest";
-}
-
 function getCategoryStats(modelKey) {
   const geo = modelGeojson[modelKey];
   const counts = {
@@ -254,9 +252,9 @@ function getCategoryStats(modelKey) {
     return { labels: CATEGORY_ORDER, counts: CATEGORY_ORDER.map((l) => counts[l]) };
   }
 
+  const qField = getQuartileField(modelKey);
   geo.features.forEach((f) => {
-    const props = f.properties || {};
-    const label = classifyPovertyShare(props.poverty_pct);
+    const label = f.properties?.[qField];
     if (label && Object.prototype.hasOwnProperty.call(counts, label)) {
       counts[label] += 1;
     }
@@ -275,13 +273,14 @@ function getTop5Barangays(modelKey, categoryFilter = "all") {
   }
 
   const stats = new Map();
+  const qField = getQuartileField(modelKey);
 
   geo.features.forEach((f) => {
     const props = f.properties || {};
     const rawPct = props.poverty_pct;
     const val = Number(rawPct);
     const name = props.barangay || "Unknown";
-    const label = classifyPovertyShare(rawPct);
+    const label = props[qField];
 
     let rec = stats.get(name);
     if (!rec) {
@@ -483,11 +482,12 @@ function getBarangayCategoryStats(modelKey, barangayName) {
   };
   let total = 0;
 
+  const qField = getQuartileField(modelKey);
   geo.features.forEach((f) => {
     const props = f.properties || {};
     const brgy = (props.barangay || "").toString().toLowerCase();
     if (!target || brgy !== target) return;
-    const label = classifyPovertyShare(props.poverty_pct);
+    const label = props[qField];
     if (label && Object.prototype.hasOwnProperty.call(counts, label)) {
       counts[label] += 1;
       total += 1;
@@ -617,11 +617,144 @@ function updateBarangayTilesChart(modelKey, barangayName) {
   }
 }
 
+function updateBarangayFactorsChart(selectedName) {
+  if (!statsBarangayFactorsCanvas || typeof Chart === "undefined") return;
+  if (!latestStatistics || !latestStatistics.barangay_factors) return;
+
+  const name = (selectedName || "").toString().trim();
+  if (!name) {
+    if (statsBarangayFactorsChart) {
+      statsBarangayFactorsChart.destroy();
+      statsBarangayFactorsChart = null;
+    }
+    return;
+  }
+
+  const rec = latestStatistics.barangay_factors[name];
+  if (!rec) {
+    if (statsBarangayFactorsChart) {
+      statsBarangayFactorsChart.destroy();
+      statsBarangayFactorsChart = null;
+    }
+    return;
+  }
+
+  const labels = [
+    "Poor households",
+    "Poor children not attending",
+    "Households using unsafe water",
+    "Poor workers in vulnerable jobs",
+  ];
+
+  const rawValues = [
+    rec.poverty_households_pct,
+    rec.children_not_attending_pct,
+    rec.unsafe_water_households_pct,
+    rec.vulnerable_jobs_pct,
+  ];
+
+  const dataValues = rawValues.map((v) =>
+    v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v),
+  );
+
+  if (statsBarangayFactorsChart) statsBarangayFactorsChart.destroy();
+
+  const ctx = statsBarangayFactorsCanvas.getContext("2d");
+  statsBarangayFactorsChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          data: dataValues,
+          backgroundColor: ["#ef4444", "#eab308", "#0ea5e9", "#a855f7"],
+          borderRadius: 6,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: {
+          beginAtZero: true,
+          max: 100,
+          grid: { color: "#1e293b" },
+          ticks: {
+            callback: (val) => `${val}%`,
+          },
+        },
+        x: {
+          ticks: {
+            color: "#cbd5f5",
+            font: { size: 9 },
+          },
+          grid: { display: false },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const idx = ctx.dataIndex;
+              const val = ctx.parsed.y;
+              if (val === null || val === undefined || Number.isNaN(val)) {
+                return `${labels[idx]}: no data`;
+              }
+
+              const base = `${val.toFixed(1)}%`;
+
+              if (idx === 0) {
+                const hh = rec.poor_households;
+                const totalHh = rec.total_households;
+                if (hh != null && totalHh != null) {
+                  return `${labels[idx]}: ${base} of households (${hh.toLocaleString()} of ${totalHh.toLocaleString()})`;
+                }
+                return `${labels[idx]}: ${base} of households`;
+              }
+
+              if (idx === 1) {
+                const notAtt = rec.children_not_attending;
+                const totalChildren = rec.total_poor_children;
+                if (notAtt != null && totalChildren != null) {
+                  return `${labels[idx]}: ${base} of poor children (${notAtt.toLocaleString()} of ${totalChildren.toLocaleString()})`;
+                }
+                return `${labels[idx]}: ${base} of poor children`;
+              }
+
+              if (idx === 2) {
+                const unsafe = rec.unsafe_water_households;
+                const totalWs = rec.total_water_households;
+                if (unsafe != null && totalWs != null) {
+                  return `${labels[idx]}: ${base} of water-using households (${unsafe.toLocaleString()} of ${totalWs.toLocaleString()})`;
+                }
+                return `${labels[idx]}: ${base} of water-using households`;
+              }
+
+              if (idx === 3) {
+                const vuln = rec.vulnerable_jobs_employed;
+                const totalEmp = rec.total_poor_employed;
+                if (vuln != null && totalEmp != null) {
+                  return `${labels[idx]}: ${base} of poor workers (${vuln.toLocaleString()} of ${totalEmp.toLocaleString()})`;
+                }
+                return `${labels[idx]}: ${base} of poor workers`;
+              }
+
+              return `${labels[idx]}: ${base}`;
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
 function createModelLayer(modelKey, geojson) {
   const layer = L.geoJSON(geojson, {
     style: function (feature) {
-      const props = feature.properties || {};
-      const label = classifyPovertyShare(props.poverty_pct);
+      const qField = getQuartileField(modelKey);
+      const label = feature.properties?.[qField];
       const color = getQuartileColor(label);
       return {
         color: "#020617",
@@ -632,11 +765,10 @@ function createModelLayer(modelKey, geojson) {
       };
     },
     onEachFeature: function (feature, featureLayer) {
-      const props = feature.properties || {};
-      const brgy = props.barangay || "Unknown";
+      const brgy = feature.properties?.barangay || "Unknown";
       const pct = formatPovertyPct(feature);
-      const catLabel = classifyPovertyShare(props.poverty_pct);
-      const cat = catLabel || "N/A";
+      const qField = getQuartileField(modelKey);
+      const cat = feature.properties?.[qField] || "N/A";
 
       const title =
         modelKey === "catboost"
@@ -663,6 +795,7 @@ function createModelLayer(modelKey, geojson) {
         className: "bg-slate-900/90 border border-slate-600 rounded-md px-3 py-2 shadow-md",
       });
 
+      // Store the original opacity for this feature
       featureLayer._baseOpacity = currentOpacity;
 
       featureLayer.on({
@@ -693,8 +826,7 @@ function createModelLayer(modelKey, geojson) {
 function createCensusPovertyLayer(geojson) {
   const layer = L.geoJSON(geojson, {
     style: function (feature) {
-      const props = feature.properties || {};
-      const label = classifyPovertyShare(props.poverty_magnitude);
+      const label = feature.properties?.poverty_quartile_census;
       const color = getQuartileColor(label);
       return {
         color: "#020617",
@@ -735,6 +867,39 @@ function createCensusPovertyLayer(geojson) {
   });
 
   return layer;
+}
+
+function clearAllLayers() {
+  // Remove all model layers from map
+  Object.values(modelLayers).forEach(layer => {
+    if (layer && map.hasLayer(layer)) {
+      map.removeLayer(layer);
+    }
+  });
+  
+  // Remove boundary layers
+  if (boundaryLayer && map.hasLayer(boundaryLayer)) {
+    map.removeLayer(boundaryLayer);
+  }
+  if (barangayBoundaryLayer && map.hasLayer(barangayBoundaryLayer)) {
+    map.removeLayer(barangayBoundaryLayer);
+  }
+  if (barangayLabelLayer && map.hasLayer(barangayLabelLayer)) {
+    map.removeLayer(barangayLabelLayer);
+  }
+  if (barangayHighlightLayer && map.hasLayer(barangayHighlightLayer)) {
+    map.removeLayer(barangayHighlightLayer);
+  }
+  
+  // Reset layer references
+  modelLayers.catboost = null;
+  modelLayers.rf = null;
+  modelLayers.cnn = null;
+  modelLayers.census = null;
+  boundaryLayer = null;
+  barangayBoundaryLayer = null;
+  barangayLabelLayer = null;
+  barangayHighlightLayer = null;
 }
 
 function activateModel(modelKey) {
@@ -1182,7 +1347,7 @@ function setupAdminControls() {
   if (refreshBtn) {
     refreshBtn.addEventListener("click", (e) => {
       e.preventDefault();
-      refreshPredictions();
+      openRefreshModal();
     });
   }
 }
@@ -1383,41 +1548,328 @@ async function downloadMapImage() {
   }
 }
 
-async function refreshPredictions() {
-  if (!refreshBtn) {
-    return;
+// ============================================================================
+// REFRESH WORKFLOW
+// ============================================================================
+
+function getDefaultDateRange() {
+  const today = new Date();
+  const endDate = today.toISOString().split('T')[0];
+  const startDate = new Date(today);
+  startDate.setFullYear(startDate.getFullYear() - 1);
+  return {
+    startDate: startDate.toISOString().split('T')[0],
+    endDate: endDate
+  };
+}
+
+function openRefreshModal() {
+  if (!refreshModal) return;
+  
+  // Set default date range (1 year leading up to today)
+  const { startDate, endDate } = getDefaultDateRange();
+  if (refreshStartDateInput) refreshStartDateInput.value = startDate;
+  if (refreshEndDateInput) refreshEndDateInput.value = endDate;
+  
+  // Set max date to today
+  const today = new Date().toISOString().split('T')[0];
+  if (refreshEndDateInput) refreshEndDateInput.max = today;
+  if (refreshStartDateInput) refreshStartDateInput.max = today;
+  
+  // Clear any previous errors/warnings
+  if (refreshErrorEl) {
+    refreshErrorEl.textContent = '';
+    refreshErrorEl.classList.add('hidden');
   }
+  if (refreshWarningEl) {
+    refreshWarningEl.textContent = '';
+    refreshWarningEl.classList.add('hidden');
+  }
+  
+  refreshModal.classList.remove('hidden');
+  
+  // Set up event listeners
+  if (refreshCancelBtn) {
+    refreshCancelBtn.onclick = () => refreshModal.classList.add('hidden');
+  }
+  if (refreshStartBtn) {
+    refreshStartBtn.onclick = () => initiateRefresh();
+  }
+  
+  // Validate date range on change
+  if (refreshStartDateInput) {
+    refreshStartDateInput.onchange = validateDateRange;
+  }
+  if (refreshEndDateInput) {
+    refreshEndDateInput.onchange = validateDateRange;
+  }
+}
 
+function validateDateRange() {
+  if (!refreshStartDateInput || !refreshEndDateInput || !refreshErrorEl) return true;
+  
+  const startDate = new Date(refreshStartDateInput.value);
+  const endDate = new Date(refreshEndDateInput.value);
+  
+  if (startDate >= endDate) {
+    refreshErrorEl.textContent = 'Start date must be before end date.';
+    refreshErrorEl.classList.remove('hidden');
+    return false;
+  }
+  
+  const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+  if (daysDiff > 365) {
+    refreshErrorEl.textContent = `Date range cannot exceed 365 days. Current: ${daysDiff} days.`;
+    refreshErrorEl.classList.remove('hidden');
+    return false;
+  }
+  
+  refreshErrorEl.classList.add('hidden');
+  return true;
+}
+
+async function initiateRefresh() {
+  if (!validateDateRange()) return;
+  
+  const startDate = refreshStartDateInput?.value;
+  const endDate = refreshEndDateInput?.value;
+  
+  // Store params for potential retry after warning
+  pendingRefreshParams = { startDate, endDate, force: false };
+  
+  // First check for cooldown warning
   try {
-    refreshBtn.disabled = true;
-    refreshBtn.textContent = "Refreshing…";
-    setStatus("Refreshing predictions from latest data…");
-
-    const res = await fetch("/api/refresh", { method: "POST" });
-    if (!res.ok) {
-      throw new Error(`Refresh failed with status ${res.status}`);
-    }
-    const data = await res.json();
-
-    if (!data || data.success === false) {
-      const msg = data && data.error ? data.error : "Unknown refresh error";
-      setStatus(`Refresh failed: ${msg}`, "error");
+    const checkRes = await fetch('/api/refresh/check');
+    const checkData = await checkRes.json();
+    
+    if (checkData.should_warn) {
+      // Close refresh modal, show warning modal
+      if (refreshModal) refreshModal.classList.add('hidden');
+      showRefreshWarningModal(checkData.days_since_refresh, checkData.cooldown_days);
       return;
     }
-
-    // Clear existing layers and reload predictions
-    clearAllLayers();
-    await loadPredictions();
-
-    const note = data.message || "Refresh completed.";
-    setStatus(`${note} Showing latest predictions.`);
   } catch (err) {
-    console.error("Error during refresh:", err);
-    setStatus("Failed to refresh predictions. Check backend logs.", "error");
-  } finally {
-    refreshBtn.disabled = false;
-    refreshBtn.textContent = "Refresh";
+    console.warn('Could not check refresh status:', err);
+    // Continue with refresh anyway
   }
+  
+  // No warning needed, proceed with refresh
+  startRefresh(startDate, endDate, false);
+}
+
+function showRefreshWarningModal(daysSinceRefresh, cooldownDays) {
+  if (!refreshWarningModal) return;
+  
+  if (refreshWarningText) {
+    refreshWarningText.textContent = 
+      `A refresh was performed ${daysSinceRefresh} days ago (recommended: every ${cooldownDays} days). ` +
+      `Are you sure you want to refresh again?`;
+  }
+  
+  if (suppressWarningCheckbox) {
+    suppressWarningCheckbox.checked = false;
+  }
+  
+  refreshWarningModal.classList.remove('hidden');
+  
+  if (refreshWarningCancelBtn) {
+    refreshWarningCancelBtn.onclick = () => {
+      refreshWarningModal.classList.add('hidden');
+      pendingRefreshParams = null;
+    };
+  }
+  
+  if (refreshWarningProceedBtn) {
+    refreshWarningProceedBtn.onclick = async () => {
+      // Save preference if checkbox is checked
+      if (suppressWarningCheckbox?.checked) {
+        try {
+          await fetch('/api/refresh/suppress-warning', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ suppress: true })
+          });
+        } catch (err) {
+          console.warn('Could not save preference:', err);
+        }
+      }
+      
+      refreshWarningModal.classList.add('hidden');
+      
+      if (pendingRefreshParams) {
+        startRefresh(
+          pendingRefreshParams.startDate,
+          pendingRefreshParams.endDate,
+          true // force=true to bypass cooldown
+        );
+      }
+    };
+  }
+}
+
+async function startRefresh(startDate, endDate, force) {
+  // Hide other modals
+  if (refreshModal) refreshModal.classList.add('hidden');
+  if (refreshWarningModal) refreshWarningModal.classList.add('hidden');
+  
+  // Show progress modal
+  if (refreshProgressModal) {
+    refreshProgressModal.classList.remove('hidden');
+    updateRefreshProgress('STARTING', 'Initiating refresh...', 0);
+    if (refreshProgressCloseBtn) refreshProgressCloseBtn.classList.add('hidden');
+    if (refreshProgressError) {
+      refreshProgressError.textContent = '';
+      refreshProgressError.classList.add('hidden');
+    }
+  }
+  
+  try {
+    const res = await fetch('/api/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_date: startDate,
+        end_date: endDate,
+        force: force
+      })
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok) {
+      if (data.error === 'cooldown_warning') {
+        // Show warning modal
+        if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+        showRefreshWarningModal(data.days_since_refresh, data.cooldown_days);
+        return;
+      }
+      
+      throw new Error(data.error || `Refresh failed with status ${res.status}`);
+    }
+    
+    if (!data.success) {
+      throw new Error(data.error || 'Unknown refresh error');
+    }
+    
+    // Start polling for progress
+    startRefreshPolling();
+    
+  } catch (err) {
+    console.error('Error starting refresh:', err);
+    showRefreshError(err.message);
+  }
+}
+
+function startRefreshPolling() {
+  // Clear any existing polling
+  if (refreshPollingInterval) {
+    clearInterval(refreshPollingInterval);
+  }
+  
+  // Poll every 2 seconds
+  refreshPollingInterval = setInterval(async () => {
+    try {
+      const res = await fetch('/api/refresh/status');
+      const data = await res.json();
+      
+      const phase = data.phase || 'UNKNOWN';
+      const progress = data.progress || 0;
+      const message = data.message || '';
+      
+      updateRefreshProgress(phase, message, progress);
+      
+      // Check if complete or errored
+      if (phase === 'COMPLETED') {
+        stopRefreshPolling();
+        showRefreshComplete(message);
+      } else if (phase === 'ERROR') {
+        stopRefreshPolling();
+        showRefreshError(data.error || message);
+      }
+      
+    } catch (err) {
+      console.error('Error polling refresh status:', err);
+    }
+  }, 2000);
+}
+
+function stopRefreshPolling() {
+  if (refreshPollingInterval) {
+    clearInterval(refreshPollingInterval);
+    refreshPollingInterval = null;
+  }
+}
+
+function updateRefreshProgress(phase, message, progress) {
+  const phaseLabels = {
+    'STARTED': 'Initializing',
+    'STARTING': 'Initializing',
+    'GEE_EXTRACTION': 'Extracting GEE Data',
+    'GEE_EXTRACTION_DONE': 'GEE Data Complete',
+    'GEE_SKIPPED': 'Using Cached Data',
+    'PREPROCESSING': 'Preprocessing',
+    'PREPROCESSING_DONE': 'Preprocessing Complete',
+    'INFERENCE': 'Running Models',
+    'INFERENCE_DONE': 'Models Complete',
+    'MERGING': 'Merging Results',
+    'MERGING_DONE': 'Merge Complete',
+    'COPYING': 'Copying Files',
+    'COPYING_DONE': 'Files Copied',
+    'COMPLETED': 'Completed',
+    'ERROR': 'Error'
+  };
+  
+  const label = phaseLabels[phase] || phase;
+  
+  if (refreshProgressPhase) refreshProgressPhase.textContent = label;
+  if (refreshProgressPct) refreshProgressPct.textContent = `${progress}%`;
+  if (refreshProgressBar) refreshProgressBar.style.width = `${progress}%`;
+  if (refreshProgressMessage) refreshProgressMessage.textContent = message;
+}
+
+function showRefreshError(errorMessage) {
+  if (refreshProgressError) {
+    refreshProgressError.textContent = errorMessage;
+    refreshProgressError.classList.remove('hidden');
+  }
+  if (refreshProgressPhase) refreshProgressPhase.textContent = 'Error';
+  if (refreshProgressBar) refreshProgressBar.classList.remove('bg-emerald-500');
+  if (refreshProgressBar) refreshProgressBar.classList.add('bg-red-500');
+  if (refreshProgressCloseBtn) refreshProgressCloseBtn.classList.remove('hidden');
+  
+  if (refreshProgressCloseBtn) {
+    refreshProgressCloseBtn.onclick = () => {
+      if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+      // Reset bar color
+      if (refreshProgressBar) {
+        refreshProgressBar.classList.remove('bg-red-500');
+        refreshProgressBar.classList.add('bg-emerald-500');
+      }
+    };
+  }
+}
+
+async function showRefreshComplete(message) {
+  updateRefreshProgress('COMPLETED', message, 100);
+  
+  if (refreshProgressCloseBtn) {
+    refreshProgressCloseBtn.classList.remove('hidden');
+    refreshProgressCloseBtn.textContent = 'Done';
+    refreshProgressCloseBtn.onclick = async () => {
+      if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+      
+      // Reload predictions
+      setStatus('Reloading predictions...');
+      clearAllLayers();
+      await loadPredictions();
+      setStatus('Predictions refreshed successfully!');
+    };
+  }
+}
+
+// Legacy function for backward compatibility
+async function refreshPredictions() {
+  openRefreshModal();
 }
 
 async function loadPredictions() {
