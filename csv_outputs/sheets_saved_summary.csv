@@ -1,0 +1,16 @@
+sheet_name,safe_name,rows,columns,csv_path
+Number of Poor Households,Number of Poor Households,99,4,csv_outputs\Number of Poor Households.csv
+Number of Poor Individuals,Number of Poor Individuals,99,4,csv_outputs\Number of Poor Individuals.csv
+Total Number of Poor Employed (,Total Number of Poor Employed _,99,22,csv_outputs\Total Number of Poor Employed _.csv
+Nature of Employment,Nature of Employment,99,4,csv_outputs\Nature of Employment.csv
+Barangay PSGC,Barangay PSGC,101,2,csv_outputs\Barangay PSGC.csv
+Poor Children Attending and Not,Poor Children Attending and Not,99,6,csv_outputs\Poor Children Attending and Not.csv
+Educational Attainment,Educational Attainment,99,7,csv_outputs\Educational Attainment.csv
+House Type,House Type,99,6,csv_outputs\House Type.csv
+Outer Wall Type,Outer Wall Type,99,8,csv_outputs\Outer Wall Type.csv
+Roof Materials,Roof Materials,98,8,csv_outputs\Roof Materials.csv
+Self Employed,Self Employed,99,2,csv_outputs\Self Employed.csv
+Water Source,Water Source,99,12,csv_outputs\Water Source.csv
+Electricity Access,Electricity Access,99,3,csv_outputs\Electricity Access.csv
+NIgga,NIgga,0,4,csv_outputs/NIgga.csv
+Electricity Access1,Electricity_Access1,99,3,csv_outputs/Electricity_Access1.csv
