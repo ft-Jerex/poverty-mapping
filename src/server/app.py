@@ -97,7 +97,20 @@ def _get_current_user() -> dict | None:
 def _is_valid_email(value: str) -> bool:
     if not value:
         return False
+    if len(value) > 254:
+        return False
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value))
+
+
+def _normalize_username(value: str) -> str:
+    username = (value or "").strip()
+    if not username:
+        return ""
+    if len(username) > 64:
+        return ""
+    if not re.match(r"^[A-Za-z0-9_.-]+$", username):
+        return ""
+    return username
 
 
 @app.route("/")
@@ -129,9 +142,8 @@ def auth_register() -> object:
     # Only allow an authenticated admin to create new users
     if _get_current_user() is None:
         return jsonify({"success": False, "error": "Forbidden"}), 403
-
     payload = request.get_json(silent=True) or {}
-    username = (payload.get("username") or "").strip()
+    username = _normalize_username(payload.get("username") or "")
     password = payload.get("password") or ""
 
     if not username or not password:
@@ -160,7 +172,7 @@ def auth_register() -> object:
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login() -> object:
-    username = (request.form.get("username") or "").strip()
+    username = _normalize_username(request.form.get("username") or "")
     password = request.form.get("password") or ""
 
     if not username or not password:
@@ -1581,7 +1593,10 @@ def api_feedback_create() -> object:
     payload = request.get_json(silent=True) or {}
     email = (payload.get("email") or "").strip().lower()
     message = (payload.get("message") or "").strip()
-    barangay = (payload.get("barangay") or "").strip() or None
+    barangay_raw = (payload.get("barangay") or "").strip()
+    if barangay_raw and len(barangay_raw) > 128:
+        barangay_raw = barangay_raw[:128]
+    barangay = barangay_raw or None
 
     if not _is_valid_email(email):
         return (

@@ -122,28 +122,28 @@ function formatRange(min, max) {
 }
 
 function updateLegend(modelKey) {
-  if (!legendContainer || !quartileRanges[modelKey]) return;
-  const ranges = quartileRanges[modelKey];
-  // Find the legend color blocks
+  // Use fixed, interpretable percentage bands for the legend instead of
+  // dynamic quartile ranges so that colors are consistent and comparable
+  // across models and time.
+  if (!legendContainer) return;
+
   const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
-  if (legendBlocks.length !== 4) return;
-  for (let i = 0; i < 4; ++i) {
-    const range = ranges[i];
+  if (!legendBlocks.length) return;
+
+  for (let i = 0; i < CATEGORY_ORDER.length && i < legendBlocks.length; ++i) {
+    const label = CATEGORY_ORDER[i];
+    const band = POVERTY_BANDS.find((b) => b.label === label);
     const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
-    if (labelSpan && range) {
-      // Update label to include value range
-      let labelText = "";
-      if (range.label === "Not poor") {
-        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Lower-middle") {
-        labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Upper-middle") {
-        labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
-      } else if (range.label === "Poorest") {
-        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
-      }
-      labelSpan.textContent = labelText;
+    if (!band || !labelSpan) continue;
+
+    let text;
+    if (band.label === "Poorest") {
+      // Open-ended top band
+      text = `Poorest (≥ ${(band.min * 100).toFixed(1)}%)`;
+    } else {
+      text = `${band.label} (${formatRange(band.min * 100, band.max * 100)})`;
     }
+    labelSpan.textContent = text;
   }
 }
 
@@ -212,6 +212,35 @@ function getQuartileField(modelKey) {
 
 const CATEGORY_ORDER = ["Not poor", "Lower-middle", "Upper-middle", "Poorest"];
 
+// Fixed poverty-percentage bands used everywhere (legend, tiles, charts).
+// Values are shares in 0–1 space; helper below also accepts 0–100 inputs.
+const POVERTY_BANDS = [
+  { label: "Not poor", min: 0.0, max: 0.3 }, // 0–30%
+  { label: "Lower-middle", min: 0.3, max: 0.4 }, // 30–40%
+  { label: "Upper-middle", min: 0.4, max: 0.6 }, // 40–60%
+  { label: "Poorest", min: 0.6, max: 1.01 }, // 60% and above
+];
+
+function normalizeShare(value) {
+  if (value === null || value === undefined) return null;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return null;
+  // Support either 0–1 or 0–100 inputs; anything above 1 is treated as percent.
+  if (num <= 1.000001) return num;
+  return num / 100;
+}
+
+function classifyPovertyShare(raw) {
+  const share = normalizeShare(raw);
+  if (share === null) return null;
+  for (const band of POVERTY_BANDS) {
+    if (share >= band.min && share < band.max) {
+      return band.label;
+    }
+  }
+  return "Poorest";
+}
+
 function getCategoryStats(modelKey) {
   const geo = modelGeojson[modelKey];
   const counts = {
@@ -225,9 +254,9 @@ function getCategoryStats(modelKey) {
     return { labels: CATEGORY_ORDER, counts: CATEGORY_ORDER.map((l) => counts[l]) };
   }
 
-  const qField = getQuartileField(modelKey);
   geo.features.forEach((f) => {
-    const label = f.properties?.[qField];
+    const props = f.properties || {};
+    const label = classifyPovertyShare(props.poverty_pct);
     if (label && Object.prototype.hasOwnProperty.call(counts, label)) {
       counts[label] += 1;
     }
@@ -246,14 +275,13 @@ function getTop5Barangays(modelKey, categoryFilter = "all") {
   }
 
   const stats = new Map();
-  const qField = getQuartileField(modelKey);
 
   geo.features.forEach((f) => {
     const props = f.properties || {};
     const rawPct = props.poverty_pct;
     const val = Number(rawPct);
     const name = props.barangay || "Unknown";
-    const label = props[qField];
+    const label = classifyPovertyShare(rawPct);
 
     let rec = stats.get(name);
     if (!rec) {
@@ -455,12 +483,11 @@ function getBarangayCategoryStats(modelKey, barangayName) {
   };
   let total = 0;
 
-  const qField = getQuartileField(modelKey);
   geo.features.forEach((f) => {
     const props = f.properties || {};
     const brgy = (props.barangay || "").toString().toLowerCase();
     if (!target || brgy !== target) return;
-    const label = props[qField];
+    const label = classifyPovertyShare(props.poverty_pct);
     if (label && Object.prototype.hasOwnProperty.call(counts, label)) {
       counts[label] += 1;
       total += 1;
@@ -590,144 +617,11 @@ function updateBarangayTilesChart(modelKey, barangayName) {
   }
 }
 
-function updateBarangayFactorsChart(selectedName) {
-  if (!statsBarangayFactorsCanvas || typeof Chart === "undefined") return;
-  if (!latestStatistics || !latestStatistics.barangay_factors) return;
-
-  const name = (selectedName || "").toString().trim();
-  if (!name) {
-    if (statsBarangayFactorsChart) {
-      statsBarangayFactorsChart.destroy();
-      statsBarangayFactorsChart = null;
-    }
-    return;
-  }
-
-  const rec = latestStatistics.barangay_factors[name];
-  if (!rec) {
-    if (statsBarangayFactorsChart) {
-      statsBarangayFactorsChart.destroy();
-      statsBarangayFactorsChart = null;
-    }
-    return;
-  }
-
-  const labels = [
-    "Poor households",
-    "Poor children not attending",
-    "Households using unsafe water",
-    "Poor workers in vulnerable jobs",
-  ];
-
-  const rawValues = [
-    rec.poverty_households_pct,
-    rec.children_not_attending_pct,
-    rec.unsafe_water_households_pct,
-    rec.vulnerable_jobs_pct,
-  ];
-
-  const dataValues = rawValues.map((v) =>
-    v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v),
-  );
-
-  if (statsBarangayFactorsChart) statsBarangayFactorsChart.destroy();
-
-  const ctx = statsBarangayFactorsCanvas.getContext("2d");
-  statsBarangayFactorsChart = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [
-        {
-          data: dataValues,
-          backgroundColor: ["#ef4444", "#eab308", "#0ea5e9", "#a855f7"],
-          borderRadius: 6,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        y: {
-          beginAtZero: true,
-          max: 100,
-          grid: { color: "#1e293b" },
-          ticks: {
-            callback: (val) => `${val}%`,
-          },
-        },
-        x: {
-          ticks: {
-            color: "#cbd5f5",
-            font: { size: 9 },
-          },
-          grid: { display: false },
-        },
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => {
-              const idx = ctx.dataIndex;
-              const val = ctx.parsed.y;
-              if (val === null || val === undefined || Number.isNaN(val)) {
-                return `${labels[idx]}: no data`;
-              }
-
-              const base = `${val.toFixed(1)}%`;
-
-              if (idx === 0) {
-                const hh = rec.poor_households;
-                const totalHh = rec.total_households;
-                if (hh != null && totalHh != null) {
-                  return `${labels[idx]}: ${base} of households (${hh.toLocaleString()} of ${totalHh.toLocaleString()})`;
-                }
-                return `${labels[idx]}: ${base} of households`;
-              }
-
-              if (idx === 1) {
-                const notAtt = rec.children_not_attending;
-                const totalChildren = rec.total_poor_children;
-                if (notAtt != null && totalChildren != null) {
-                  return `${labels[idx]}: ${base} of poor children (${notAtt.toLocaleString()} of ${totalChildren.toLocaleString()})`;
-                }
-                return `${labels[idx]}: ${base} of poor children`;
-              }
-
-              if (idx === 2) {
-                const unsafe = rec.unsafe_water_households;
-                const totalWs = rec.total_water_households;
-                if (unsafe != null && totalWs != null) {
-                  return `${labels[idx]}: ${base} of water-using households (${unsafe.toLocaleString()} of ${totalWs.toLocaleString()})`;
-                }
-                return `${labels[idx]}: ${base} of water-using households`;
-              }
-
-              if (idx === 3) {
-                const vuln = rec.vulnerable_jobs_employed;
-                const totalEmp = rec.total_poor_employed;
-                if (vuln != null && totalEmp != null) {
-                  return `${labels[idx]}: ${base} of poor workers (${vuln.toLocaleString()} of ${totalEmp.toLocaleString()})`;
-                }
-                return `${labels[idx]}: ${base} of poor workers`;
-              }
-
-              return `${labels[idx]}: ${base}`;
-            },
-          },
-        },
-      },
-    },
-  });
-}
-
 function createModelLayer(modelKey, geojson) {
   const layer = L.geoJSON(geojson, {
     style: function (feature) {
-      const qField = getQuartileField(modelKey);
-      const label = feature.properties?.[qField];
+      const props = feature.properties || {};
+      const label = classifyPovertyShare(props.poverty_pct);
       const color = getQuartileColor(label);
       return {
         color: "#020617",
@@ -738,10 +632,11 @@ function createModelLayer(modelKey, geojson) {
       };
     },
     onEachFeature: function (feature, featureLayer) {
-      const brgy = feature.properties?.barangay || "Unknown";
+      const props = feature.properties || {};
+      const brgy = props.barangay || "Unknown";
       const pct = formatPovertyPct(feature);
-      const qField = getQuartileField(modelKey);
-      const cat = feature.properties?.[qField] || "N/A";
+      const catLabel = classifyPovertyShare(props.poverty_pct);
+      const cat = catLabel || "N/A";
 
       const title =
         modelKey === "catboost"
@@ -768,7 +663,6 @@ function createModelLayer(modelKey, geojson) {
         className: "bg-slate-900/90 border border-slate-600 rounded-md px-3 py-2 shadow-md",
       });
 
-      // Store the original opacity for this feature
       featureLayer._baseOpacity = currentOpacity;
 
       featureLayer.on({
@@ -799,7 +693,8 @@ function createModelLayer(modelKey, geojson) {
 function createCensusPovertyLayer(geojson) {
   const layer = L.geoJSON(geojson, {
     style: function (feature) {
-      const label = feature.properties?.poverty_quartile_census;
+      const props = feature.properties || {};
+      const label = classifyPovertyShare(props.poverty_magnitude);
       const color = getQuartileColor(label);
       return {
         color: "#020617",
