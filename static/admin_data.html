@@ -60,6 +60,11 @@
     </div>
   </header>
 
+  <div
+    id="sheet-save-notice"
+    class="hidden fixed top-3 left-1/2 -translate-x-1/2 transform z-30 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 px-4 py-2 text-xs shadow-lg"
+  ></div>
+
   <main class="flex-1 flex overflow-hidden">
     <aside class="w-[26%] border-r border-slate-800 bg-slate-950/70 backdrop-blur flex flex-col">
       <div class="px-4 py-3 border-b border-slate-800">
@@ -87,9 +92,6 @@
         >
           New sheet
         </button>
-        <p class="text-[11px] text-slate-400">
-          Existing CSVs listed in <code>sheets_saved_summary.csv</code> appear here automatically.
-        </p>
       </div>
       <div id="sheets-list" class="flex-1 overflow-y-auto text-xs p-2 space-y-1"></div>
     </aside>

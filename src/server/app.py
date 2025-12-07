@@ -32,8 +32,8 @@ STATIC_DIR = ROOT / "static"
 DATA_DIR = ROOT / "data"
 SHAPEFILE_PATH = DATA_DIR / "shapefile" / "zc04AdminBoundaries_gcs.shp"
 
-GRID_GEOJSON_PATH = DATA_DIR / "grid_with_comprehensive_data.geojson"
-MERGED_PREDICTIONS_PATH = DATA_DIR / "grid_predictions_comparison.csv"
+GRID_GEOJSON_PATH = DATA_DIR / "grid_1km_all.gpkg"
+MERGED_PREDICTIONS_PATH = DATA_DIR / "gpkg_complete_predictions.csv"
 GRID_GPKG_PATH = DATA_DIR / "grid_1km_all.gpkg"
 CNN_PRED_PATH = DATA_DIR / "all_cells_predictions_1km.csv"
 
@@ -207,7 +207,15 @@ def auth_login() -> object:
     password = request.form.get("password") or ""
 
     if not username or not password:
-        return jsonify({"success": False, "error": "Username and password are required."}), 400
+        accept_header = request.headers.get("Accept") or ""
+        if "application/json" in accept_header:
+            return (
+                jsonify(
+                    {"success": False, "error": "Username and password are required."}
+                ),
+                400,
+            )
+        return redirect(url_for("login", error="missing"))
 
     conn = _get_db_connection()
     try:
@@ -220,7 +228,10 @@ def auth_login() -> object:
         conn.close()
 
     if row is None or not check_password_hash(row["password_hash"], password):
-        return jsonify({"success": False, "error": "Invalid credentials."}), 401
+        accept_header = request.headers.get("Accept") or ""
+        if "application/json" in accept_header:
+            return jsonify({"success": False, "error": "Invalid credentials."}), 401
+        return redirect(url_for("login", error="invalid"))
 
     session["username"] = username
     return redirect(url_for("admin"))
@@ -284,8 +295,25 @@ def _prepare_data() -> dict:
     else:
         barangay_col = _detect_barangay_column(roi_gdf)
 
-    grid_gdf = gpd.read_file(GRID_GEOJSON_PATH)
-    merged = pd.read_csv(MERGED_PREDICTIONS_PATH)
+    # Use GPKG for complete coverage
+    grid_gdf = gpd.read_file(GRID_GEOJSON_PATH)  # This is now the GPKG
+    merged = pd.read_csv(MERGED_PREDICTIONS_PATH)  # This is now the complete predictions
+    
+    # Convert GPKG cell_id to grid_id format for merging
+    def cell_id_to_grid_id(cell_id):
+        try:
+            parts = str(cell_id).split('_')
+            if len(parts) == 3 and parts[0] == 'cell':
+                x = int(parts[1])
+                y = int(parts[2])
+                return f"{x}_{y}"
+        except:
+            pass
+        return cell_id  # Return original if conversion fails
+
+    if 'cell_id' in grid_gdf.columns and 'grid_id' not in grid_gdf.columns:
+        grid_gdf['grid_id'] = grid_gdf['cell_id'].apply(cell_id_to_grid_id)
+    
     gdf = grid_gdf.merge(merged, on="grid_id", how="left")
 
     if roi_gdf.crs and gdf.crs and roi_gdf.crs != gdf.crs:
@@ -992,32 +1020,34 @@ def _load_grid_predictions() -> tuple[dict, dict, dict]:
     Returns (boundary_fc, labels_fc, models_dict) where models_dict has
     'catboost', 'rf', and 'cnn' FeatureCollections.
     """
-    grid_csv = DATA_DIR / "grid_with_comprehensive_data.csv"
-    preds_csv = DATA_DIR / "grid_predictions_comparison.csv"
+    grid_gpkg = DATA_DIR / "grid_1km_all.gpkg"
+    preds_csv = DATA_DIR / "complete_grid_predictions.csv"
     cnn_csv = DATA_DIR / "all_cells_predictions_1km.csv"
 
-    if not (grid_csv.exists() and preds_csv.exists() and cnn_csv.exists()):
-        raise FileNotFoundError("Required data CSV files are missing in data/.")
+    if not (grid_gpkg.exists() and preds_csv.exists() and cnn_csv.exists()):
+        raise FileNotFoundError("Required data files are missing in data/.")
 
-    grid_df = pd.read_csv(grid_csv)
+    grid_df = gpd.read_file(grid_gpkg)
     preds_df = pd.read_csv(preds_csv)
     cnn_df = pd.read_csv(cnn_csv)
 
-    # Merge on grid_id, keep geometry (.geo) and barangay name
-    cols_needed = [
-        "grid_id",
-        ".geo",
-        "lon",
-        "lat",
-        "barangay_name_clean",
-    ]
-    missing = [c for c in cols_needed if c not in grid_df.columns]
-    if missing:
-        raise KeyError(f"Missing columns in grid_with_comprehensive_data.csv: {missing}")
+    # Convert GPKG cell_id to grid_id format for merging
+    def cell_id_to_grid_id(cell_id):
+        try:
+            parts = str(cell_id).split('_')
+            if len(parts) == 3 and parts[0] == 'cell':
+                x = int(parts[1])
+                y = int(parts[2])
+                return f"{x}_{y}"
+        except:
+            pass
+        return None
 
+    grid_df['grid_id'] = grid_df['cell_id'].apply(cell_id_to_grid_id)
+    
+    # Merge predictions with grid data
     merged = (
-        grid_df[cols_needed]
-        .merge(preds_df, on="grid_id", how="inner")
+        grid_df.merge(preds_df, on="grid_id", how="inner")
         .dropna(subset=["pred_scaled_catboost", "pred_scaled_rf"])
         .reset_index(drop=True)
     )
@@ -1193,8 +1223,10 @@ def _load_grid_predictions() -> tuple[dict, dict, dict]:
         merged["poverty_pct_cnn"] = pd.NA
         merged["poverty_quartile_cnn"] = pd.NA
     for _, row in merged.iterrows():
-        geom = json.loads(row[".geo"])
-        brgy = row["barangay_name_clean"]
+        # Use the geometry from GPKG - convert to GeoJSON format
+        from shapely.geometry import mapping
+        geom = mapping(row.geometry)
+        brgy = row.get("barangay_name_clean", "")
 
         cat_features.append(
             {
@@ -1272,6 +1304,105 @@ def api_statistics() -> object:
         return jsonify(data)
     except Exception as exc:  # pragma: no cover
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/statistics/barangay/<name>")
+def api_statistics_for_barangay(name: str) -> object:
+    """Return per-barangay values for all admin-exposed statistics sheets.
+
+    This uses the same sheet configuration as the Statistics tab custom_sheets
+    wiring, but filters each exposed sheet down to the requested barangay
+    based on its configured x_column and first y_column.
+    """
+
+    try:
+        target = (name or "").strip()
+        if not target:
+            return jsonify({"success": False, "error": "Missing barangay name"}), 400
+
+        cfg_all = _load_sheets_config()
+        summary = _load_sheets_summary()
+
+        results: list[dict] = []
+
+        if not summary.empty and isinstance(cfg_all, dict):
+            # Ensure we have a safe_name column for joins
+            if "safe_name" not in summary.columns:
+                summary["safe_name"] = summary.get("sheet_name", "").apply(
+                    _slugify_sheet_name
+                )
+
+            norm_target = target.strip().upper()
+
+            for safe_name, cfg_entry in cfg_all.items():
+                if not isinstance(cfg_entry, dict):
+                    continue
+                if not cfg_entry.get("expose_in_statistics"):
+                    continue
+
+                x_column = (cfg_entry.get("x_column") or "").strip()
+                y_columns = cfg_entry.get("y_columns") or []
+                if not x_column or not y_columns:
+                    continue
+                y_column = str(y_columns[0])
+
+                row_mask = summary["safe_name"].astype(str) == str(safe_name)
+                if not row_mask.any():
+                    continue
+
+                row = summary.loc[row_mask].iloc[0]
+                csv_rel = str(row.get("csv_path") or "").strip()
+                if not csv_rel:
+                    continue
+
+                csv_path = ROOT / csv_rel
+                if not csv_path.exists():
+                    alt = CSV_DIR / csv_rel
+                    csv_path = alt if alt.exists() else csv_path
+                if not csv_path.exists():
+                    continue
+
+                try:
+                    df = pd.read_csv(csv_path)
+                except Exception:
+                    continue
+
+                if x_column not in df.columns or y_column not in df.columns:
+                    continue
+
+                x_series = df[x_column].astype(str)
+                mask_valid = x_series.notna() & (x_series.str.strip().str.upper() != "TOTAL")
+                df_work = df.loc[mask_valid].copy()
+                if df_work.empty:
+                    continue
+
+                x_norm = df_work[x_column].astype(str).str.strip().str.upper()
+                mask_brgy = x_norm == norm_target
+                df_sel = df_work.loc[mask_brgy]
+                if df_sel.empty:
+                    continue
+
+                y_series = pd.to_numeric(df_sel[y_column], errors="coerce")
+                if y_series.dropna().empty:
+                    value: float | None = None
+                else:
+                    # If multiple rows match, sum them for a single value
+                    value = float(y_series.fillna(0.0).sum())
+
+                results.append(
+                    {
+                        "safe_name": safe_name,
+                        "sheet_name": str(row.get("sheet_name") or safe_name),
+                        "x_column": x_column,
+                        "y_column": y_column,
+                        "barangay": target,
+                        "value": value,
+                    }
+                )
+
+        return jsonify({"success": True, "barangay": target, "sheets": results})
+    except Exception as exc:  # pragma: no cover
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @app.route("/api/sheets", methods=["GET"])

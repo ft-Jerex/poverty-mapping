@@ -3,6 +3,7 @@
   const sheetTitleEl = document.getElementById("sheet-title");
   const sheetMetaEl = document.getElementById("sheet-meta");
   const sheetHelpEl = document.getElementById("sheet-help");
+  const sheetSaveNotice = document.getElementById("sheet-save-notice");
   const addColumnBtn = document.getElementById("add-column-btn");
   const addRowBtn = document.getElementById("add-row-btn");
   const saveSheetBtn = document.getElementById("save-sheet-btn");
@@ -92,6 +93,39 @@
     } catch (e) {
       console.error("Failed to check auth", e);
     }
+  }
+
+  function showSheetSaveNotice(message, isError) {
+    if (!sheetSaveNotice) return;
+    sheetSaveNotice.textContent = message;
+    sheetSaveNotice.classList.remove("hidden");
+
+    if (isError) {
+      sheetSaveNotice.classList.remove(
+        "border-emerald-500/40",
+        "bg-emerald-500/10",
+        "text-emerald-200",
+      );
+      sheetSaveNotice.classList.add("border-red-500/40", "bg-red-500/10", "text-red-200");
+    } else {
+      sheetSaveNotice.classList.remove(
+        "border-red-500/40",
+        "bg-red-500/10",
+        "text-red-200",
+      );
+      sheetSaveNotice.classList.add(
+        "border-emerald-500/40",
+        "bg-emerald-500/10",
+        "text-emerald-200",
+      );
+    }
+
+    if (sheetSaveNotice._timeoutId) {
+      clearTimeout(sheetSaveNotice._timeoutId);
+    }
+    sheetSaveNotice._timeoutId = setTimeout(() => {
+      sheetSaveNotice.classList.add("hidden");
+    }, 3500);
   }
 
   function escapeHtml(str) {
@@ -515,9 +549,11 @@
       }
       await loadSheets();
       chartStatusEl.textContent = "Sheet saved. You can now re-use this CSV in statistics pipelines.";
+      showSheetSaveNotice("Update Succesfully", false);
     } catch (e) {
       console.error(e);
       chartStatusEl.textContent = `Failed to save sheet: ${e.message}`;
+      showSheetSaveNotice("Error. Something Happened..", true);
     } finally {
       saveSheetBtn.disabled = false;
       saveSheetBtn.textContent = "Save changes";

@@ -8,14 +8,15 @@ services:
     environment:
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-your-secret-key-here}
       - FLASK_ENV=production
+      - GEE_PROJECT_ID=${GEE_PROJECT_ID:-ee-zc-povertymapping}
+      - GEE_SERVICE_ACCOUNT_JSON=${GEE_SERVICE_ACCOUNT_JSON}
+      - GEE_CREDENTIALS_PATH=${GEE_CREDENTIALS_PATH}
     volumes:
       # Mount data directories for persistence
       - ./data:/app/data
       - ./output:/app/output
       - ./assets:/app/assets
       - ./googleEarthExports:/app/googleEarthExports
-      # Mount Google Earth Engine credentials if available
-      - ${GEE_CREDENTIALS_PATH:-/dev/null}:/app/gee-credentials.json:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

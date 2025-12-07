@@ -36,6 +36,11 @@
           dashboard.
         </p>
 
+        <p
+          id="login-error"
+          class="mb-4 text-xs text-red-400 bg-red-500/10 border border-red-500/40 rounded-md px-3 py-2 hidden"
+        ></p>
+
         <form
           method="POST"
           action="/auth/login"
@@ -74,5 +79,29 @@
       </p>
     </div>
   </main>
+
+  <script>
+    (function () {
+      try {
+        const params = new URLSearchParams(window.location.search || "");
+        const code = params.get("error");
+        if (!code) return;
+        const el = document.getElementById("login-error");
+        if (!el) return;
+
+        let message = "Unable to sign in. Please check your credentials and try again.";
+        if (code === "missing") {
+          message = "Please enter both a username and a password.";
+        } else if (code === "invalid") {
+          message = "Incorrect username or password. Double-check your details and try again.";
+        }
+
+        el.textContent = message;
+        el.classList.remove("hidden");
+      } catch (e) {
+        // Fail silently if URL parsing is not supported
+      }
+    })();
+  </script>
 </body>
 </html>

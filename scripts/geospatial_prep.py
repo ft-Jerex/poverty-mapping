@@ -22,22 +22,38 @@ try:
 except ImportError:
     # Inline implementation when gee_zc_grid_watcher is not available
     from google.oauth2 import service_account
+    import json as _json
     
-    EE_PROJECT_ID = "ee-zc-povertymapping"
-    
-    # Look for service account file in multiple locations
-    _POSSIBLE_SA_PATHS = [
-        Path(__file__).resolve().parent / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
-        Path(__file__).resolve().parent.parent / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
-        Path(__file__).resolve().parent.parent / "data" / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
-        Path("c:/Users/Admin/povmapbackend/env/ee-zc-povertymapping-0c4c39483d32.json"),
-    ]
+    # Get project ID from environment
+    EE_PROJECT_ID = os.environ.get("GEE_PROJECT_ID", "ee-zc-povertymapping")
     
     def _get_credentials():
-        """Load service account credentials from the JSON key file."""
+        """Load service account credentials from environment or file."""
         scopes = [
             "https://www.googleapis.com/auth/earthengine",
             "https://www.googleapis.com/auth/drive.readonly",
+        ]
+        
+        # Option 1: Direct JSON from environment variable
+        sa_json_str = os.environ.get("GEE_SERVICE_ACCOUNT_JSON")
+        if sa_json_str:
+            try:
+                sa_info = _json.loads(sa_json_str)
+                return service_account.Credentials.from_service_account_info(sa_info, scopes=scopes)
+            except (_json.JSONDecodeError, Exception) as e:
+                print(f"Failed to parse GEE_SERVICE_ACCOUNT_JSON: {e}")
+        
+        # Option 2: Path from environment variable
+        sa_path_env = os.environ.get("GEE_CREDENTIALS_PATH")
+        if sa_path_env and Path(sa_path_env).exists():
+            return service_account.Credentials.from_service_account_file(sa_path_env, scopes=scopes)
+        
+        # Option 3: Look for service account file in multiple locations
+        _POSSIBLE_SA_PATHS = [
+            Path(__file__).resolve().parent / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
+            Path(__file__).resolve().parent.parent / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
+            Path(__file__).resolve().parent.parent / "data" / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
+            Path("c:/Users/Admin/povmapbackend/env/ee-zc-povertymapping-0c4c39483d32.json"),
         ]
         
         for sa_path in _POSSIBLE_SA_PATHS:
@@ -48,7 +64,7 @@ except ImportError:
                 )
         
         raise FileNotFoundError(
-            f"Service account file not found. Searched: {[str(p) for p in _POSSIBLE_SA_PATHS]}"
+            f"Google Earth Engine credentials not found. Set GEE_SERVICE_ACCOUNT_JSON or GEE_CREDENTIALS_PATH environment variable, or place service account file in one of: {[str(p) for p in _POSSIBLE_SA_PATHS]}"
         )
 
 import geemap

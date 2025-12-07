@@ -74,9 +74,6 @@
           class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors">
           Download map
         </button>
-        <button class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors">
-          Upload
-        </button>
         <a
           href="/admin/data"
           class="px-3 py-1.5 rounded-full bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors">
@@ -170,24 +167,34 @@
               <span class="font-semibold">Poverty legend:</span>
               <span id="legend-model-name" class="text-[10px] uppercase tracking-wide text-slate-400"> CatBoost</span>
             </div>
-          <div class="space-y-1.5">
-            <div class="flex items-center gap-2">
-              <span class="inline-block w-3 h-3 rounded-sm" style="background-color: #22c55e;"></span>
-              <span>Not poor (lowest 25% of predicted poverty)</span>
-            </div>
-            <div class="flex items-center gap-2">
-              <span class="inline-block w-3 h-3 rounded-sm" style="background-color: #eab308;"></span>
-              <span>Lower-middle (25–50% of tiles)</span>
-            </div>
-            <div class="flex items-center gap-2">
-              <span class="inline-block w-3 h-3 rounded-sm" style="background-color: #f97316;"></span>
-              <span>Upper-middle (50–75% of tiles)</span>
-            </div>
-            <div class="flex items-center gap-2">
-              <span class="inline-block w-3 h-3 rounded-sm" style="background-color: #ef4444;"></span>
-              <span>Poorest (highest 25% of predicted poverty)</span>
-            </div>
+          <div class="flex items-center justify-between text-[11px] text-slate-400">
+            <span id="legend-mode-label">Legend mode: Fixed bands</span>
+            <button
+              id="legend-mode-toggle"
+              class="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors"
+              type="button"
+            >
+              Switch to quartiles
+            </button>
           </div>
+          <div class="space-y-1.5">
+              <div class="flex items-center gap-2">
+                <span class="inline-block w-3 h-3 rounded-sm" style="background-color: #22c55e;"></span>
+                <span>Low</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="inline-block w-3 h-3 rounded-sm" style="background-color: #eab308;"></span>
+                <span>Lower-middle</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="inline-block w-3 h-3 rounded-sm" style="background-color: #f97316;"></span>
+                <span>Upper-middle</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="inline-block w-3 h-3 rounded-sm" style="background-color: #ef4444;"></span>
+                <span>High</span>
+              </div>
+            </div>
         </div>
       </div>
     </section>
@@ -288,17 +295,14 @@
 
       <div id="panel-statistics" class="flex-1 flex flex-col overflow-y-auto hidden">
         <div id="stats-custom-section" class="p-4 border-b border-slate-800 hidden">
-          <h3 class="text-xs font-semibold text-slate-200 mb-1">Custom sheet visualizations</h3>
-          <p class="text-[11px] text-slate-400 mb-3">
-            Charts wired from the Admin Data sheets quick visualization for sheets marked "Show in Statistics tab".
-          </p>
+          <h3 class="text-xs font-semibold text-slate-200 mb-1">Statistics Visualization</h3>
           <div id="stats-custom-sheets" class="space-y-4"></div>
         </div>
 
         <div class="p-4 border-t border-slate-800">
-          <h3 class="text-xs font-semibold text-slate-200 mb-1">Barangay factors</h3>
+          <h3 class="text-xs font-semibold text-slate-200 mb-1">Barangay statistics</h3>
           <p class="text-[11px] text-slate-400 mb-3">
-            Select a barangay to see a quick profile of key poverty and vulnerability indicators.
+            Select a barangay to see values from all statistics.
           </p>
           <div class="flex items-center gap-2 mb-3">
             <select
@@ -308,9 +312,15 @@
               <option value="">Select barangay...</option>
             </select>
           </div>
-          <div class="h-48">
-            <canvas id="stats-barangay-factors" class="w-full h-full"></canvas>
-          </div>
+          <p
+            id="stats-barangay-summary"
+            class="text-[11px] text-slate-400 mb-2"
+          >
+          </p>
+          <div
+            id="stats-barangay-sheets"
+            class="space-y-2 text-[11px]"
+          ></div>
         </div>
       </div>
 

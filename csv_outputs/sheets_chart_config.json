@@ -24,7 +24,7 @@
       "Identified Poor Individuals"
     ],
     "row_mode": "top5",
-    "expose_in_statistics": false
+    "expose_in_statistics": true
   },
   "Total Number of Poor Employed _": {
     "chart_type": "pie",
@@ -33,7 +33,7 @@
       "Total Number of Poor Employed"
     ],
     "row_mode": "top5",
-    "expose_in_statistics": false
+    "expose_in_statistics": true
   },
   "Poor Children Attending and Not": {
     "chart_type": "bar",
@@ -53,6 +53,24 @@
     ],
     "row_mode": "top5",
     "sort_column": "High School (12-15 YRS OLD)",
+    "expose_in_statistics": true
+  },
+  "House Type": {
+    "chart_type": "bar",
+    "x_column": "Barangay",
+    "y_columns": [
+      "Duplex"
+    ],
+    "row_mode": "top5",
+    "expose_in_statistics": true
+  },
+  "Electricity Access": {
+    "chart_type": "bar",
+    "x_column": "Barangay",
+    "y_columns": [
+      "with access of electricity"
+    ],
+    "row_mode": "top5",
     "expose_in_statistics": true
   }
 }

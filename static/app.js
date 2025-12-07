@@ -21,11 +21,16 @@ let satelliteBase = L.tileLayer(
 
 osmBase.addTo(map);
 
+// Ensure map is visible even before predictions finish loading
+map.setView([6.9214, 122.079], 11);
+
 const statusEl = document.getElementById("status");
 const toggleButtons = Array.from(document.querySelectorAll(".model-toggle"));
 const opacitySlider = document.getElementById("opacity-slider");
 const opacityValue = document.getElementById("opacity-value");
 const legendModelNameEl = document.getElementById("legend-model-name");
+const legendModeLabelEl = document.getElementById("legend-mode-label");
+const legendModeToggleBtn = document.getElementById("legend-mode-toggle");
 
 const legendContainer = document.querySelector(
   '.backdrop-blur.bg-slate-900\\/75.border.border-slate-700.rounded-lg.shadow-lg.px-4.py-3.w-52.text-xs.text-slate-200.space-y-2'
@@ -59,6 +64,9 @@ const barangayFactorsSelect = document.getElementById("barangay-factors-select")
 const statsBarangayFactorsCanvas = document.getElementById("stats-barangay-factors");
 const statsCustomSection = document.getElementById("stats-custom-section");
 const statsCustomContainer = document.getElementById("stats-custom-sheets");
+const barangayFactorsTogglesContainer = document.getElementById("barangay-factors-toggles");
+const statsBarangaySummaryEl = document.getElementById("stats-barangay-summary");
+const statsBarangaySheetsContainer = document.getElementById("stats-barangay-sheets");
 
 const createUserBtn = document.getElementById("create-user-btn");
 const logoutBtn = document.getElementById("logout-btn");
@@ -130,6 +138,7 @@ let boundaryGeojson = null;
 
 let activeModel = "catboost";
 let currentOpacity = 0.8;
+let legendMode = "quartile"; // "fixed" or "quartile"
 
 let pieChart = null;
 let barChart = null;
@@ -143,31 +152,81 @@ let statsBarangayFactorsChart = null;
 let statsCustomCharts = [];
 let latestStatistics = null;
 
+let currentBarangayFactorsSelection = "";
+const barangayFactorsEnabled = {
+  poverty_households_pct: true,
+  children_not_attending_pct: true,
+  unsafe_water_households_pct: true,
+  vulnerable_jobs_pct: true,
+};
+
 function formatRange(min, max) {
   // Show as percent with 1 decimal
   return `${min.toFixed(1)}% – ${max.toFixed(1)}%`;
 }
 
+// Spinner helpers for the download button
+function ensureSpinnerCss() {
+  if (document.getElementById("pmw-spinner-style")) return;
+  const style = document.createElement("style");
+  style.id = "pmw-spinner-style";
+  style.textContent = `@keyframes pmwspin{to{transform:rotate(360deg)}}.pmw-spinner{width:14px;height:14px;margin-right:6px;border:2px solid #cbd5e1;border-top-color:#10b981;border-radius:50%;animation:pmwspin .8s linear infinite;display:inline-block;vertical-align:middle}`;
+  document.head.appendChild(style);
+}
+
+function startButtonSpinner(btn, label = "Loading") {
+  if (!btn) return;
+  ensureSpinnerCss();
+  if (!btn.dataset.originalHtml) btn.dataset.originalHtml = btn.innerHTML;
+  btn.innerHTML = `<span class="pmw-spinner"></span><span>${label}…</span>`;
+}
+
+function stopButtonSpinner(btn) {
+  if (!btn) return;
+  if (btn.dataset.originalHtml) {
+    btn.innerHTML = btn.dataset.originalHtml;
+    delete btn.dataset.originalHtml;
+  }
+}
+
 function updateLegend(modelKey) {
-  if (!legendContainer || !quartileRanges[modelKey]) return;
-  const ranges = quartileRanges[modelKey];
-  // Find the legend color blocks
+  if (!legendContainer) return;
+
   const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
   if (legendBlocks.length !== 4) return;
+
+  // Fixed-band labels (0–30, 30–50, 50–60, >60)
+  if (legendMode === "fixed") {
+    const labels = [
+      "Low (0–30%)",
+      "Lower-middle (30–50%)",
+      "Upper-middle (50–60%)",
+      "High (>60%)",
+    ];
+    for (let i = 0; i < 4; ++i) {
+      const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
+      if (labelSpan) {
+        labelSpan.textContent = labels[i] || "";
+      }
+    }
+    return;
+  }
+
+  if (!quartileRanges[modelKey]) return;
+  const ranges = quartileRanges[modelKey];
   for (let i = 0; i < 4; ++i) {
     const range = ranges[i];
     const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
     if (labelSpan && range) {
-      // Update label to include value range
       let labelText = "";
       if (range.label === "Not poor") {
-        labelText = `Not poor (${formatRange(range.min * 100, range.max * 100)})`;
+        labelText = `Low(${formatRange(range.min * 100, range.max * 100)})`;
       } else if (range.label === "Lower-middle") {
         labelText = `Lower-middle (${formatRange(range.min * 100, range.max * 100)})`;
       } else if (range.label === "Upper-middle") {
         labelText = `Upper-middle (${formatRange(range.min * 100, range.max * 100)})`;
       } else if (range.label === "Poorest") {
-        labelText = `Poorest (${formatRange(range.min * 100, range.max * 100)})`;
+        labelText = `High (${formatRange(range.min * 100, range.max * 100)})`;
       }
       labelSpan.textContent = labelText;
     }
@@ -192,6 +251,30 @@ function getQuartileColor(label) {
     case "Upper-middle":
       return "#f97316";
     case "Poorest":
+      return "#ef4444";
+    default:
+      return "#64748b";
+  }
+}
+
+function getFixedBandLabel(povertyPct) {
+  const val = Number(povertyPct);
+  if (!Number.isFinite(val)) return null;
+  if (val <= 30) return "Low (0–30%)";
+  if (val <= 50) return "Lower-middle (30–50%)";
+  if (val <= 60) return "Upper-middle (50–60%)";
+  return "High (>60%)";
+}
+
+function getFixedBandColor(label) {
+  switch (label) {
+    case "Low (0–30%)":
+      return "#22c55e";
+    case "Lower-middle (30–50%)":
+      return "#eab308";
+    case "Upper-middle (50–60%)":
+      return "#f97316";
+    case "High (>60%)":
       return "#ef4444";
     default:
       return "#64748b";
@@ -394,11 +477,13 @@ function updateCharts(modelKey) {
       if (!total) {
         pieSummaryEl.textContent = "No tiles available for this model.";
       } else {
-        const lines = stats.labels.map((label, idx) => {
-          const count = stats.counts[idx] || 0;
-          const pct = total ? (count / total) * 100 : 0;
-          return `<div>${label}: <span class="font-semibold">${count.toLocaleString()}</span> tiles (${pct.toFixed(1)}%)</div>`;
-        });
+        const lines = stats.labels
+          .map((label, idx) => {
+            const count = stats.counts[idx] || 0;
+            const pct = total ? (count / total) * 100 : 0;
+            return `<div>${label}: <span class="font-semibold">${count.toLocaleString()}</span> tiles (${pct.toFixed(1)}%)</div>`;
+          })
+          .join("");
         pieSummaryEl.innerHTML = [
           `<div class="font-semibold mb-1">${total.toLocaleString()} tiles total</div>`,
           ...lines,
@@ -577,29 +662,21 @@ function updateBarangayTilesChart(modelKey, barangayName) {
         y: {
           beginAtZero: true,
           max: 100,
+          grid: { color: "#1e293b" },
           ticks: {
             callback: (val) => `${val}%`,
-          },
-          grid: {
-            color: "#1e293b",
           },
         },
         x: {
           ticks: {
             color: "#cbd5f5",
-            font: {
-              size: 10,
-            },
+            font: { size: 10 },
           },
-          grid: {
-            display: false,
-          },
+          grid: { display: false },
         },
       },
       plugins: {
-        legend: {
-          display: false,
-        },
+        legend: { display: false },
         tooltip: {
           callbacks: {
             label: (ctx) => `${ctx.parsed.y.toFixed(1)}% of tiles`,
@@ -618,144 +695,22 @@ function updateBarangayTilesChart(modelKey, barangayName) {
 }
 
 function updateBarangayFactorsChart(selectedName) {
-  if (!statsBarangayFactorsCanvas || typeof Chart === "undefined") return;
-  if (!latestStatistics || !latestStatistics.barangay_factors) return;
-
-  const name = (selectedName || "").toString().trim();
-  if (!name) {
-    if (statsBarangayFactorsChart) {
-      statsBarangayFactorsChart.destroy();
-      statsBarangayFactorsChart = null;
-    }
-    return;
-  }
-
-  const rec = latestStatistics.barangay_factors[name];
-  if (!rec) {
-    if (statsBarangayFactorsChart) {
-      statsBarangayFactorsChart.destroy();
-      statsBarangayFactorsChart = null;
-    }
-    return;
-  }
-
-  const labels = [
-    "Poor households",
-    "Poor children not attending",
-    "Households using unsafe water",
-    "Poor workers in vulnerable jobs",
-  ];
-
-  const rawValues = [
-    rec.poverty_households_pct,
-    rec.children_not_attending_pct,
-    rec.unsafe_water_households_pct,
-    rec.vulnerable_jobs_pct,
-  ];
-
-  const dataValues = rawValues.map((v) =>
-    v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v),
-  );
-
-  if (statsBarangayFactorsChart) statsBarangayFactorsChart.destroy();
-
-  const ctx = statsBarangayFactorsCanvas.getContext("2d");
-  statsBarangayFactorsChart = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [
-        {
-          data: dataValues,
-          backgroundColor: ["#ef4444", "#eab308", "#0ea5e9", "#a855f7"],
-          borderRadius: 6,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        y: {
-          beginAtZero: true,
-          max: 100,
-          grid: { color: "#1e293b" },
-          ticks: {
-            callback: (val) => `${val}%`,
-          },
-        },
-        x: {
-          ticks: {
-            color: "#cbd5f5",
-            font: { size: 9 },
-          },
-          grid: { display: false },
-        },
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => {
-              const idx = ctx.dataIndex;
-              const val = ctx.parsed.y;
-              if (val === null || val === undefined || Number.isNaN(val)) {
-                return `${labels[idx]}: no data`;
-              }
-
-              const base = `${val.toFixed(1)}%`;
-
-              if (idx === 0) {
-                const hh = rec.poor_households;
-                const totalHh = rec.total_households;
-                if (hh != null && totalHh != null) {
-                  return `${labels[idx]}: ${base} of households (${hh.toLocaleString()} of ${totalHh.toLocaleString()})`;
-                }
-                return `${labels[idx]}: ${base} of households`;
-              }
-
-              if (idx === 1) {
-                const notAtt = rec.children_not_attending;
-                const totalChildren = rec.total_poor_children;
-                if (notAtt != null && totalChildren != null) {
-                  return `${labels[idx]}: ${base} of poor children (${notAtt.toLocaleString()} of ${totalChildren.toLocaleString()})`;
-                }
-                return `${labels[idx]}: ${base} of poor children`;
-              }
-
-              if (idx === 2) {
-                const unsafe = rec.unsafe_water_households;
-                const totalWs = rec.total_water_households;
-                if (unsafe != null && totalWs != null) {
-                  return `${labels[idx]}: ${base} of water-using households (${unsafe.toLocaleString()} of ${totalWs.toLocaleString()})`;
-                }
-                return `${labels[idx]}: ${base} of water-using households`;
-              }
-
-              if (idx === 3) {
-                const vuln = rec.vulnerable_jobs_employed;
-                const totalEmp = rec.total_poor_employed;
-                if (vuln != null && totalEmp != null) {
-                  return `${labels[idx]}: ${base} of poor workers (${vuln.toLocaleString()} of ${totalEmp.toLocaleString()})`;
-                }
-                return `${labels[idx]}: ${base} of poor workers`;
-              }
-
-              return `${labels[idx]}: ${base}`;
-            },
-          },
-        },
-      },
-    },
-  });
+  // Deprecated: left for backward compatibility; new Statistics tab behavior
+  // uses admin-exposed sheets via /api/statistics/barangay/<name> instead.
 }
 
 function createModelLayer(modelKey, geojson) {
   const layer = L.geoJSON(geojson, {
     style: function (feature) {
-      const qField = getQuartileField(modelKey);
-      const label = feature.properties?.[qField];
-      const color = getQuartileColor(label);
+      let color;
+      if (legendMode === "fixed") {
+        const bandLabel = getFixedBandLabel(feature.properties?.poverty_pct);
+        color = getFixedBandColor(bandLabel);
+      } else {
+        const qField = getQuartileField(modelKey);
+        const label = feature.properties?.[qField];
+        color = getQuartileColor(label);
+      }
       return {
         color: "#020617",
         weight: 0.2,
@@ -871,12 +826,12 @@ function createCensusPovertyLayer(geojson) {
 
 function clearAllLayers() {
   // Remove all model layers from map
-  Object.values(modelLayers).forEach(layer => {
+  Object.values(modelLayers).forEach((layer) => {
     if (layer && map.hasLayer(layer)) {
       map.removeLayer(layer);
     }
   });
-  
+
   // Remove boundary layers
   if (boundaryLayer && map.hasLayer(boundaryLayer)) {
     map.removeLayer(boundaryLayer);
@@ -890,7 +845,7 @@ function clearAllLayers() {
   if (barangayHighlightLayer && map.hasLayer(barangayHighlightLayer)) {
     map.removeLayer(barangayHighlightLayer);
   }
-  
+
   // Reset layer references
   modelLayers.catboost = null;
   modelLayers.rf = null;
@@ -947,8 +902,12 @@ function activateModel(modelKey) {
 
   setStatus(
     `Showing ${
-      modelKey === "catboost" ? "CatBoost" : modelKey === "rf" ? "Random Forest" : "CNN"
-    } predictions • Hover a grid to see barangay and poverty details`,
+      modelKey === "catboost"
+        ? "CatBoost"
+        : modelKey === "rf"
+        ? "Random Forest"
+        : "CNN"
+    } predictions`,
   );
 
   updateCharts(modelKey);
@@ -1100,6 +1059,17 @@ function setupBarangaySearch() {
     }
 
     updateBarangayTilesChart(activeModel, normalized);
+
+    // Also reflect the selection in the Barangay statistics panel, if present
+    if (barangayFactorsSelect) {
+      const opts = Array.from(barangayFactorsSelect.options || []);
+      const match = opts.find((o) => (o.value || "").toString().trim().toUpperCase() === normalized.toUpperCase());
+      if (match) {
+        barangayFactorsSelect.value = match.value;
+        // Trigger the existing change handler to load stats for this barangay
+        barangayFactorsSelect.dispatchEvent(new Event("change"));
+      }
+    }
   };
 
   brgySearchBtn.addEventListener("click", runSearch);
@@ -1357,6 +1327,233 @@ function renderStatisticsCharts(stats) {
 
   latestStatistics = stats;
 
+  // Top barangays by census poverty (landing + any page that has the canvas)
+  if (statsTopHhCanvas && stats.top_poverty_households) {
+    const ctx = statsTopHhCanvas.getContext("2d");
+    if (statsTopHhChart) {
+      statsTopHhChart.destroy();
+      statsTopHhChart = null;
+    }
+    const s = stats.top_poverty_households;
+    const labels = Array.isArray(s.barangays) ? s.barangays : [];
+    const mags = Array.isArray(s.poverty_magnitude) ? s.poverty_magnitude : [];
+    const values = mags.map((v) => {
+      const num = Number(v);
+      return Number.isFinite(num) ? Number((num * 100).toFixed(1)) : null;
+    });
+    statsTopHhChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Poverty magnitude (% of households)",
+            data: values,
+            backgroundColor: "#ef4444",
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            max: 100,
+            grid: { color: "#1e293b" },
+            ticks: {
+              callback: (val) => `${val}%`,
+            },
+          },
+          x: {
+            ticks: { color: "#cbd5f5", font: { size: 9 } },
+            grid: { display: false },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.parsed.y.toFixed(1)}% of households`,
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // Poor children attendance (citywide)
+  if (statsChildrenCanvas && stats.poor_children_attendance) {
+    const ctx = statsChildrenCanvas.getContext("2d");
+    if (statsChildrenChart) {
+      statsChildrenChart.destroy();
+      statsChildrenChart = null;
+    }
+    const s = stats.poor_children_attendance;
+    const attending = Number(s.attending) || 0;
+    const notAttending = Number(s.not_attending) || 0;
+    statsChildrenChart = new Chart(ctx, {
+      type: "doughnut",
+      data: {
+        labels: ["Attending", "Not attending"],
+        datasets: [
+          {
+            data: [attending, notAttending],
+            backgroundColor: ["#22c55e", "#ef4444"],
+            borderWidth: 0,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { size: 10 } },
+          },
+        },
+      },
+    });
+  }
+
+  // Top barangays by poor children not attending
+  if (statsChildrenTopNonAttendCanvas && stats.top_poor_children_not_attending) {
+    const ctx = statsChildrenTopNonAttendCanvas.getContext("2d");
+    if (statsChildrenTopNonAttendChart) {
+      statsChildrenTopNonAttendChart.destroy();
+      statsChildrenTopNonAttendChart = null;
+    }
+    const s = stats.top_poor_children_not_attending;
+    const labels = Array.isArray(s.barangays) ? s.barangays : [];
+    const values = Array.isArray(s.not_attending)
+      ? s.not_attending.map((v) => {
+          const num = Number(v);
+          return Number.isFinite(num) ? num : 0;
+        })
+      : [];
+    statsChildrenTopNonAttendChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Children not attending school",
+            data: values,
+            backgroundColor: "#f97316",
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            grid: { color: "#1e293b" },
+          },
+          x: {
+            ticks: { color: "#cbd5f5", font: { size: 9 } },
+            grid: { display: false },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+        },
+      },
+    });
+  }
+
+  // Water source for poor households
+  if (statsWaterCanvas && stats.water_source) {
+    const ctx = statsWaterCanvas.getContext("2d");
+    if (statsWaterChart) {
+      statsWaterChart.destroy();
+      statsWaterChart = null;
+    }
+    const s = stats.water_source;
+    const labels = Array.isArray(s.labels) ? s.labels : [];
+    const counts = Array.isArray(s.counts)
+      ? s.counts.map((v) => {
+          const num = Number(v);
+          return Number.isFinite(num) ? num : 0;
+        })
+      : [];
+    statsWaterChart = new Chart(ctx, {
+      type: "doughnut",
+      data: {
+        labels,
+        datasets: [
+          {
+            data: counts,
+            backgroundColor: ["#0ea5e9", "#f97316", "#22c55e", "#a855f7", "#eab308"],
+            borderWidth: 0,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { size: 10 } },
+          },
+        },
+      },
+    });
+  }
+
+  // Employment profile of poor workers
+  if (statsEmploymentCanvas && stats.poor_employment_occupation) {
+    const ctx = statsEmploymentCanvas.getContext("2d");
+    if (statsEmploymentChart) {
+      statsEmploymentChart.destroy();
+      statsEmploymentChart = null;
+    }
+    const s = stats.poor_employment_occupation;
+    const labels = Array.isArray(s.labels) ? s.labels : [];
+    const counts = Array.isArray(s.counts)
+      ? s.counts.map((v) => {
+          const num = Number(v);
+          return Number.isFinite(num) ? num : 0;
+        })
+      : [];
+    statsEmploymentChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Poor employed workers",
+            data: counts,
+            backgroundColor: "#0ea5e9",
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            grid: { color: "#1e293b" },
+          },
+          x: {
+            ticks: { color: "#cbd5f5", font: { size: 9 } },
+            grid: { display: false },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+        },
+      },
+    });
+  }
+
   // Admin-defined custom sheet visualizations (driven by Admin Data sheets)
   if (statsCustomSection && statsCustomContainer) {
     // Destroy any existing custom charts
@@ -1392,7 +1589,7 @@ function renderStatisticsCharts(stats) {
         const p = document.createElement("p");
         p.className = "text-[11px] text-slate-400 mb-2";
         p.textContent =
-          "Driven by the admin Data sheets quick visualization settings for this sheet.";
+          "Visualization of the statistics";
         wrapper.appendChild(p);
 
         const canvasWrapper = document.createElement("div");
@@ -1423,69 +1620,75 @@ function renderStatisticsCharts(stats) {
         const colors = labels.map((_, i) => palette[i % palette.length]);
 
         const ctx = canvas.getContext("2d");
-        const chart = new Chart(ctx, {
-          type: type === "pie" ? "pie" : type,
-          data: {
-            labels,
-            datasets: [
-              {
-                label: cfg.y_column || "Value",
-                data: values,
-                backgroundColor: type === "pie" ? colors : colors,
-                borderColor: type === "pie" ? colors : colors,
-                borderWidth: type === "line" ? 2 : 0,
-                tension: 0.25,
-              },
-            ],
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales:
-              type === "pie"
-                ? {}
-                : {
-                    x: {
-                      ticks: { color: "#cbd5f5", font: { size: 10 } },
-                      grid: { display: false },
+        statsCustomCharts.push(
+          new Chart(ctx, {
+            type: type === "pie" ? "pie" : type,
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: cfg.y_column || "Value",
+                  data: values,
+                  backgroundColor: type === "pie" ? colors : colors,
+                  borderColor: type === "pie" ? colors : colors,
+                  borderWidth: type === "line" ? 2 : 0,
+                  tension: 0.25,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales:
+                type === "pie"
+                  ? {}
+                  : {
+                      x: {
+                        ticks: {
+                          color: "#cbd5f5",
+                          font: { size: 10 },
+                        },
+                        grid: { display: false },
+                      },
+                      y: {
+                        beginAtZero: true,
+                        ticks: {
+                          color: "#cbd5f5",
+                          font: { size: 10 },
+                        },
+                        grid: { color: "#1e293b" },
+                      },
                     },
-                    y: {
-                      beginAtZero: true,
-                      ticks: { color: "#cbd5f5", font: { size: 10 } },
-                      grid: { color: "#1e293b" },
+              plugins: {
+                legend: { labels: { font: { size: 10 } } },
+                tooltip: {
+                  callbacks: {
+                    label: (ctx) => {
+                      const val = ctx.parsed.y ?? ctx.parsed;
+                      if (val === null || val === undefined || Number.isNaN(val)) {
+                        return `${ctx.dataset.label}: no data`;
+                      }
+
+                      const base = `${val}`;
+
+                      return `${ctx.dataset.label}: ${base}`;
                     },
-                  },
-            plugins: {
-              legend: { labels: { font: { size: 10 } } },
-              tooltip: {
-                callbacks: {
-                  label: (ctx) => {
-                    const val = ctx.parsed.y ?? ctx.parsed;
-                    if (val === null || val === undefined || Number.isNaN(val)) {
-                      return `${ctx.dataset.label}: no data`;
-                    }
-                    return `${ctx.dataset.label}: ${val}`;
                   },
                 },
               },
             },
-          },
-        });
-
-        statsCustomCharts.push(chart);
+          }),
+        );
       });
     }
   }
 
-  // Barangay factors (per-barangay profile)
+  // Barangay statistics (per-barangay profile from admin-exposed sheets)
   if (
     barangayFactorsSelect &&
-    statsBarangayFactorsCanvas &&
     latestStatistics &&
-    latestStatistics.barangay_list &&
-    latestStatistics.barangay_factors
+    Array.isArray(latestStatistics.custom_sheets)
   ) {
-    // Populate dropdown
     barangayFactorsSelect.innerHTML = "";
 
     const placeholder = document.createElement("option");
@@ -1493,28 +1696,130 @@ function renderStatisticsCharts(stats) {
     placeholder.textContent = "Select barangay...";
     barangayFactorsSelect.appendChild(placeholder);
 
-    latestStatistics.barangay_list.forEach((name) => {
+    const list = Array.isArray(latestStatistics.barangay_list)
+      ? latestStatistics.barangay_list
+      : [];
+    list.forEach((name) => {
       const opt = document.createElement("option");
       opt.value = name;
       opt.textContent = name;
       barangayFactorsSelect.appendChild(opt);
     });
 
+    const normalizeName = (val) =>
+      (val || "")
+        .toString()
+        .trim()
+        .toUpperCase();
+
+    const loadForBarangay = async (barangayName) => {
+      if (!statsBarangaySummaryEl || !statsBarangaySheetsContainer) return;
+      statsBarangaySummaryEl.textContent = "Loading statistics…";
+      statsBarangaySheetsContainer.innerHTML = "";
+
+      try {
+        const res = await fetch(`/api/statistics/barangay/${encodeURIComponent(barangayName)}`);
+        const data = await res.json().catch(() => ({}));
+        const sheets = Array.isArray(data.sheets) ? data.sheets : [];
+
+        if (!res.ok || data.success === false || !sheets.length) {
+          statsBarangaySummaryEl.textContent = `No statistics available for ${barangayName} from admin sheets.`;
+          return;
+        }
+
+        statsBarangaySummaryEl.textContent =
+          `Admin statistics for ${barangayName} from ${sheets.length} sheet${
+            sheets.length > 1 ? "s" : ""
+          }:`;
+
+        sheets.forEach((sheet, index) => {
+          const card = document.createElement("div");
+          card.className =
+            "border border-slate-800 rounded-lg px-3 py-2 bg-slate-950/60";
+
+          const title = document.createElement("div");
+          title.className = "text-[11px] font-semibold text-slate-200 mb-1";
+          title.textContent = sheet.sheet_name || `Sheet ${index + 1}`;
+          card.appendChild(title);
+
+          const desc = document.createElement("div");
+          desc.className = "text-[10px] text-slate-400 mb-1";
+          if (sheet.y_column && sheet.x_column) {
+            desc.textContent = `${sheet.y_column} by ${sheet.x_column}`;
+          } else if (sheet.y_column) {
+            desc.textContent = sheet.y_column;
+          } else {
+            desc.textContent = "Admin-defined statistic";
+          }
+          card.appendChild(desc);
+
+          const valueLine = document.createElement("div");
+          valueLine.className = "text-[11px] text-slate-100";
+          const num =
+            sheet.value === null || sheet.value === undefined
+              ? null
+              : Number(sheet.value);
+          if (num === null || Number.isNaN(num)) {
+            valueLine.textContent = "No data for this barangay.";
+          } else {
+            valueLine.textContent = `${barangayName}: ${num.toLocaleString()}`;
+          }
+          card.appendChild(valueLine);
+
+          const barWrapper = document.createElement("div");
+          barWrapper.className =
+            "mt-1 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden";
+          const barInner = document.createElement("div");
+          barInner.className = "h-full bg-emerald-500";
+          if (num !== null && !Number.isNaN(num)) {
+            const clamped = Math.max(5, Math.min(100, Math.abs(num)));
+            barInner.style.width = `${clamped}%`;
+          } else {
+            barInner.style.width = "0%";
+          }
+          barWrapper.appendChild(barInner);
+          card.appendChild(barWrapper);
+
+          statsBarangaySheetsContainer.appendChild(card);
+        });
+      } catch (err) {
+        console.error("Failed to load barangay statistics", err);
+        statsBarangaySummaryEl.textContent = "Failed to load barangay statistics.";
+      }
+    };
+
     barangayFactorsSelect.addEventListener("change", () => {
+      if (!statsBarangaySummaryEl || !statsBarangaySheetsContainer) return;
       const value = barangayFactorsSelect.value;
-      updateBarangayFactorsChart(value);
+      statsBarangaySheetsContainer.innerHTML = "";
+      if (!value) {
+        statsBarangaySummaryEl.textContent =
+          "Select a barangay to view admin-defined statistics.";
+        return;
+      }
+      loadForBarangay(value);
     });
+
+    if (statsBarangaySummaryEl) {
+      statsBarangaySummaryEl.textContent =
+        "Select a barangay to view admin-defined statistics.";
+    }
   }
+
 }
 
-async function downloadMapImage() {
-  if (!downloadMapBtn || typeof html2canvas === "undefined") {
-    return;
-  }
+  async function downloadMapImage() {
+    if (!downloadMapBtn) {
+      return;
+    }
 
   try {
     downloadMapBtn.disabled = true;
-    setStatus("Preparing map image for download…");
+    setStatus("Preparing download package…");
+    startButtonSpinner(downloadMapBtn, "Preparing");
+    await buildComprehensiveDownload();
+    stopButtonSpinner(downloadMapBtn);
+    return;
 
     const mapEl = document.getElementById("map");
     if (!mapEl) {
@@ -1544,9 +1849,294 @@ async function downloadMapImage() {
   } finally {
     if (downloadMapBtn) {
       downloadMapBtn.disabled = false;
+      stopButtonSpinner(downloadMapBtn);
     }
   }
+  }
+
+// Helper to ensure required client-side libs are present (html2canvas, JSZip, FileSaver, jsPDF)
+async function ensureDownloadLibs() {
+  const inject = (src) =>
+    new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error(`Failed to load ${src}`));
+      (document.head || document.body).appendChild(s);
+    });
+
+  if (typeof html2canvas === "undefined") {
+    try { await inject("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"); } catch (_) {}
+  }
+  if (typeof JSZip === "undefined") {
+    try { await inject("https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"); } catch (_) {}
+  }
+  if (typeof saveAs === "undefined") {
+    try { await inject("https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"); } catch (_) {}
+  }
+  if (!(window.jspdf && window.jspdf.jsPDF)) {
+    try { await inject("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"); } catch (_) {}
+  }
 }
+
+// Build a comprehensive ZIP (and summary PDF) including per-model map images (with legend),
+// per-model CSVs, category distribution pie, and Top 5 charts for each category.
+async function buildComprehensiveDownload() {
+  await ensureDownloadLibs();
+  const hasH2C = typeof html2canvas !== "undefined";
+  const hasZip = typeof JSZip !== "undefined";
+  const hasSaver = typeof saveAs !== "undefined";
+  const hasPDF = !!(window.jspdf && window.jspdf.jsPDF);
+  if (!hasH2C || !hasZip || !hasSaver) {
+    setStatus("Download not available (missing libs).", "error");
+    return;
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sanitize = (s) => (s || "unknown").toString().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9\-]/g, "");
+
+  const mapEl = document.getElementById("map");
+  if (!mapEl) {
+    setStatus("Map element not found.", "error");
+    return;
+  }
+
+  const captureTarget = mapEl.parentElement || mapEl; // include overlays (legend, toggles)
+  const rect = captureTarget.getBoundingClientRect();
+  const mapWidth = Math.max(1, Math.floor(rect.width));
+  const mapHeight = Math.max(1, Math.floor(rect.height));
+
+  const zip = new JSZip();
+  const images = {};
+  const imageDims = {};
+  const csvs = {};
+
+  const csvFromGeo = (geo, modelKey) => {
+    if (!geo || !Array.isArray(geo.features)) return "";
+    const qField = getQuartileField(modelKey);
+    const header = ["grid_id", "barangay", "poverty_pct", "category"];
+    const rows = [header.join(",")];
+    geo.features.forEach((f) => {
+      const p = f && f.properties ? f.properties : {};
+      const gid = p.grid_id ?? "";
+      const brgy = (p.barangay ?? "").toString().replace(/\r|\n|,/g, " ");
+      const val = p.poverty_pct ?? "";
+      const cat = p[qField] ?? "";
+      rows.push([gid, brgy, val, cat].join(","));
+    });
+    return rows.join("\n");
+  };
+
+  const captureElement = async (el) => {
+    const canvas = await html2canvas(el, {
+      useCORS: true,
+      logging: false,
+      scale: 2,
+      backgroundColor: "#020617",
+      allowTaint: false,
+    });
+    return canvas.toDataURL("image/png");
+  };
+
+  const addImageToZip = (path, dataUrl) => {
+    const base64 = (dataUrl || "").split(",")[1];
+    if (base64) zip.file(path, base64, { base64: true });
+  };
+
+  // Ensure a model layer is visible and painted before capture
+  async function ensureModelReady(modelKey) {
+    activateModel(modelKey);
+    await new Promise((resolve) => {
+      let done = false;
+      const timer = setTimeout(() => { if (!done) { done = true; resolve(); } }, 1200);
+      if (typeof map?.once === "function") {
+        map.once("idle", () => { if (!done) { done = true; clearTimeout(timer); resolve(); } });
+      }
+    });
+    const layer = modelLayers[modelKey];
+    if (layer) {
+      try {
+        layer.eachLayer((fl) => {
+          if (fl && typeof fl.setStyle === "function") {
+            fl.setStyle({ fillOpacity: Math.max(0.05, currentOpacity) });
+          }
+        });
+      } catch (_) {}
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    }
+  }
+
+  // Save UI state
+  const original = {
+    model: activeModel,
+    top5: top5CategoryFilter ? top5CategoryFilter.value : "all",
+  };
+
+  // Per-model maps + CSV
+  const modelKeys = ["catboost", "rf", "cnn"].filter(
+    (k) => modelGeojson[k] && Array.isArray(modelGeojson[k].features) && modelGeojson[k].features.length > 0,
+  );
+  for (const m of modelKeys) {
+    await ensureModelReady(m);
+    const dataUrl = await captureElement(captureTarget);
+    images[`maps/${m}_map.png`] = dataUrl;
+    imageDims[`maps/${m}_map.png`] = { w: mapWidth, h: mapHeight };
+    csvs[`data/${m}_predictions.csv`] = csvFromGeo(modelGeojson[m], m);
+  }
+
+  // Ensure charts are present
+  if (!pieChart) {
+    updateCharts(activeModel || modelKeys[0] || "catboost");
+    await sleep(120);
+  }
+  if (pieChart) {
+    images["charts/category_distribution.png"] = pieChart.toBase64Image("image/png", 1.0);
+  }
+
+  // Top 5 charts for each category in dropdown
+  const categories = top5CategoryFilter
+    ? Array.from(top5CategoryFilter.options || []).map((o) => o.value)
+    : ["all", "Poorest", "Upper-middle", "Lower-middle", "Not poor"];
+  for (const val of categories) {
+    if (top5CategoryFilter) {
+      top5CategoryFilter.value = val;
+      top5CategoryFilter.dispatchEvent(new Event("change"));
+      await sleep(140);
+    } else {
+      updateCharts(activeModel || modelKeys[0] || "catboost");
+      await sleep(80);
+    }
+    if (barChart) {
+      const key = `charts/top5_${sanitize(val)}.png`;
+      images[key] = barChart.toBase64Image("image/png", 1.0);
+    }
+  }
+
+  // Per-model charts into subfolders
+  for (const m of modelKeys) {
+    updateCharts(m);
+    await sleep(140);
+    if (pieChart) {
+      images[`charts/${m}/category_distribution.png`] = pieChart.toBase64Image("image/png", 1.0);
+    }
+    for (const val of categories) {
+      if (top5CategoryFilter) {
+        top5CategoryFilter.value = val;
+        top5CategoryFilter.dispatchEvent(new Event("change"));
+        await sleep(140);
+      } else {
+        updateCharts(m);
+        await sleep(80);
+      }
+      if (barChart) {
+        images[`charts/${m}/top5_${sanitize(val)}.png`] = barChart.toBase64Image("image/png", 1.0);
+      }
+    }
+  }
+
+  // Restore UI state
+  if (original.model) activateModel(original.model);
+  if (top5CategoryFilter && original.top5) {
+    top5CategoryFilter.value = original.top5;
+    top5CategoryFilter.dispatchEvent(new Event("change"));
+  }
+
+  // Optional: PDF summary
+  let pdfBlob = null;
+  if (hasPDF) {
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const margin = 36;
+    const contentW = pageW - margin * 2;
+
+    pdf.setFontSize(14);
+    pdf.text("Zamboanga City Poverty Mapping — Download Summary", margin, 40);
+    pdf.setFontSize(10);
+    pdf.text(new Date().toLocaleString(), margin, 56);
+
+    for (const m of modelKeys) {
+      pdf.addPage();
+      pdf.setFontSize(12);
+      pdf.text(`${m.toUpperCase()} model map`, margin, 40);
+      const pKey = `maps/${m}_map.png`;
+      const img = images[pKey];
+      if (img) {
+        const dims = imageDims[pKey] || { w: mapWidth, h: mapHeight };
+        const dispW = contentW;
+        const dispH = Math.min(pageH - 100, Math.floor((dims.h / dims.w) * dispW));
+        pdf.addImage(img, "PNG", margin, 60, dispW, dispH);
+      }
+    }
+
+    if (images["charts/category_distribution.png"]) {
+      pdf.addPage();
+      pdf.setFontSize(12);
+      pdf.text("Category distribution", margin, 40);
+      pdf.addImage(images["charts/category_distribution.png"], "PNG", margin, 60, contentW, contentW * 0.6);
+    }
+
+    for (const val of categories) {
+      const key = `charts/top5_${sanitize(val)}.png`;
+      const img = images[key];
+      if (!img) continue;
+      pdf.addPage();
+      pdf.setFontSize(12);
+      pdf.text(`Top 5 barangays — ${val}`, margin, 40);
+      pdf.addImage(img, "PNG", margin, 60, contentW, contentW * 0.5);
+    }
+
+    // Also include per-model charts
+    for (const m of modelKeys) {
+      const cdKey = `charts/${m}/category_distribution.png`;
+      if (images[cdKey]) {
+        pdf.addPage();
+        pdf.setFontSize(12);
+        pdf.text(`${m.toUpperCase()} — Category distribution`, margin, 40);
+        pdf.addImage(images[cdKey], "PNG", margin, 60, contentW, contentW * 0.6);
+      }
+      for (const val of categories) {
+        const k = `charts/${m}/top5_${sanitize(val)}.png`;
+        const img2 = images[k];
+        if (!img2) continue;
+        pdf.addPage();
+        pdf.setFontSize(12);
+        pdf.text(`${m.toUpperCase()} — Top 5 barangays: ${val}`, margin, 40);
+        pdf.addImage(img2, "PNG", margin, 60, contentW, contentW * 0.5);
+      }
+    }
+
+    pdfBlob = pdf.output("blob");
+  }
+
+  if (pdfBlob) zip.file("summary.pdf", pdfBlob);
+  Object.entries(images).forEach(([path, dataUrl]) => addImageToZip(path, dataUrl));
+  Object.entries(csvs).forEach(([path, text]) => zip.file(path, text || ""));
+  zip.file(
+    "README.txt",
+    [
+      "Zamboanga City Poverty Mapping — Download Package",
+      "",
+      "Contents:",
+      "- summary.pdf: Summary with maps and charts (all models).",
+      "- maps/*_map.png: Map images per model (with legend).",
+      "- charts/<model>/category_distribution.png: Category distribution per model.",
+      "- charts/<model>/top5_*.png: Top 5 barangays per model and category.",
+      "- data/*_predictions.csv: Predictions per model (grid_id, barangay, poverty_pct, category).",
+      "",
+      `Generated: ${new Date().toLocaleString()}`,
+    ].join("\n"),
+  );
+
+  const blob = await zip.generateAsync({ type: "blob" });
+  const filename = `zc_poverty_package_${new Date().toISOString().replace(/[:.]/g, "-")}.zip`;
+  saveAs(blob, filename);
+  setStatus("Download ready.");
+}
+
+ 
 
 // ============================================================================
 // REFRESH WORKFLOW
@@ -1736,7 +2326,7 @@ async function startRefresh(startDate, endDate, force) {
     
     const data = await res.json();
     
-    if (!res.ok) {
+    if (!res.ok || !data || data.success === false) {
       if (data.error === 'cooldown_warning') {
         // Show warning modal
         if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
@@ -1973,6 +2563,12 @@ async function loadPredictions() {
   } catch (err) {
     console.error("Error loading predictions:", err);
     setStatus("Failed to load predictions. Check the backend logs.", "error");
+    // Attach UI handlers even if predictions failed, so controls still work
+    setupToggleButtons();
+    setupOpacitySlider();
+    setupBarangayLayerToggles();
+    setupBarangaySearch();
+    setupTop5CategoryFilter();
   }
 }
 
@@ -2210,36 +2806,85 @@ async function fetchPeopleMessages() {
   }
 }
 
+function rebuildModelLayersForLegendMode() {
+  // Recreate CatBoost / RF / CNN layers so colors follow the current legend mode
+  Object.entries(modelGeojson).forEach(([key, geo]) => {
+    if (!geo) return;
+    const existing = modelLayers[key];
+    const wasVisible = existing && map.hasLayer(existing);
+    if (existing && map.hasLayer(existing)) {
+      map.removeLayer(existing);
+    }
+    modelLayers[key] = createModelLayer(key, geo);
+    if (wasVisible || activeModel === key) {
+      activateModel(key);
+    }
+  });
+}
+
+function setupLegendModeToggle() {
+  if (!legendModeToggleBtn || !legendModeLabelEl) return;
+
+  const applyUi = () => {
+    if (legendMode === "fixed") {
+      legendModeLabelEl.textContent = "Legend mode: Fixed bands";
+      legendModeToggleBtn.textContent = "Switch to quartiles";
+    } else {
+      legendModeLabelEl.textContent = "Legend mode: Quartiles";
+      legendModeToggleBtn.textContent = "Switch to fixed bands";
+    }
+  };
+
+  applyUi();
+
+  legendModeToggleBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    legendMode = legendMode === "fixed" ? "quartile" : "fixed";
+    applyUi();
+    if (activeModel) {
+      updateLegend(activeModel);
+    }
+    rebuildModelLayersForLegendMode();
+  });
+}
+
 setupTabs();
 setupAdminControls();
 setupLandingPageNavigation();
 setupLandingPageAnimations();
 setupResetViewControl();
 setupFeedbackForm();
+setupLegendModeToggle();
 loadPredictions();
 
 // Load statistics for the Statistics tab
 (async function loadStatistics() {
   try {
     const res = await fetch("/api/statistics");
-    if (!res.ok) return;
+    if (!res.ok) {
+      return;
+    }
     const stats = await res.json();
     renderStatisticsCharts(stats);
   } catch (e) {
     console.error("Failed to load statistics", e);
   }
-})();
+}());
 
 if (censusToggle) {
   censusToggle.addEventListener("change", (e) => {
-    if (!censusPovertyGeojson) return;
+    if (!censusPovertyGeojson) {
+      return;
+    }
 
     if (!modelLayers.census && censusPovertyGeojson) {
       modelLayers.census = createCensusPovertyLayer(censusPovertyGeojson);
     }
 
     const layer = modelLayers.census;
-    if (!layer) return;
+    if (!layer) {
+      return;
+    }
 
     if (e.target.checked) {
       layer.addTo(map);
