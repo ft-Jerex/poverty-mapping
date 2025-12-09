@@ -52,17 +52,9 @@ pm_webapp/
 geospatial_prep_status.json
 preprocessing_status.json
 
-# Data files
-# *.csv
-*.geojson
-*.gpkg
+# Large binary data files (but allow in assets/)
 *.tif
 *.tiff
-*.shp
-*.shx
-*.dbf
-*.prj
-*.cpg
 
 # OS generated files
 .DS_Store
