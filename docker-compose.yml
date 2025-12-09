@@ -1,4 +1,4 @@
-version: '3.8'
+﻿version: '3.8'
 
 services:
   poverty-mapping:
@@ -8,14 +8,13 @@ services:
     environment:
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-your-secret-key-here}
       - FLASK_ENV=production
-    volumes:
+      - GEE_PROJECT_ID=${GEE_PROJECT_ID:-ee-zc-povertymapping}
+      - GEE_SERVICE_ACCOUNT=${GEE_SERVICE_ACCOUNT}`r`n      - GEE_PRIVATE_KEY_B64=${GEE_PRIVATE_KEY_B64}`r`n      - GEE_PRIVATE_KEY_JSON=${GEE_PRIVATE_KEY_JSON}`r`n    volumes:
       # Mount data directories for persistence
       - ./data:/app/data
       - ./output:/app/output
       - ./assets:/app/assets
       - ./googleEarthExports:/app/googleEarthExports
-      # Mount Google Earth Engine credentials if available
-      - ${GEE_CREDENTIALS_PATH:-/dev/null}:/app/gee-credentials.json:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -36,3 +35,4 @@ services:
     depends_on:
       - poverty-mapping
     restart: unless-stopped
+

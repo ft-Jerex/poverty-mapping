@@ -116,19 +116,25 @@ def merge_model_predictions(
     cat_labeled = pd.read_csv(catboost_predictions_csv)
     rf_labeled = pd.read_csv(rf_predictions_csv)
     
-    # Load unlabeled predictions if they exist
+    # Load unlabeled predictions if they exist (legacy training outputs)
     cat_unlabeled_path = catboost_predictions_csv.parent / "unlabeled_grid_predictions.csv"
     rf_unlabeled_path = rf_predictions_csv.parent / "unlabeled_grid_predictions.csv"
     
     # Prepare CatBoost predictions
-    cat_labeled = cat_labeled.rename(columns={
-        'pred_raw': 'pred_scaled_catboost',
-        '__target__': 'target_poverty_rate',
-    })
+    # Legacy format: grid_cell_id + pred_raw / __target__
+    if 'pred_raw' in cat_labeled.columns:
+        cat_labeled = cat_labeled.rename(columns={
+            'pred_raw': 'pred_scaled_catboost',
+            '__target__': 'target_poverty_rate',
+        })
+    elif 'pred_scaled_catboost' not in cat_labeled.columns and 'pred' in cat_labeled.columns:
+        # Fallback: rename generic pred column
+        cat_labeled = cat_labeled.rename(columns={'pred': 'pred_scaled_catboost'})
     
     if cat_unlabeled_path.exists():
         cat_unlabeled = pd.read_csv(cat_unlabeled_path)
-        cat_unlabeled = cat_unlabeled.rename(columns={'pred': 'pred_scaled_catboost'})
+        if 'pred_scaled_catboost' not in cat_unlabeled.columns and 'pred' in cat_unlabeled.columns:
+            cat_unlabeled = cat_unlabeled.rename(columns={'pred': 'pred_scaled_catboost'})
         cat_unlabeled['target_poverty_rate'] = None
         cat_unlabeled['population'] = None
         cat_df = pd.concat([cat_labeled, cat_unlabeled], ignore_index=True)
@@ -138,23 +144,57 @@ def merge_model_predictions(
         print(f"CatBoost: {len(cat_df)} predictions (no unlabeled file found)")
     
     # Prepare RF predictions
-    rf_labeled = rf_labeled.rename(columns={
-        'pred_raw': 'pred_scaled_rf',
-    })
+    if 'pred_raw' in rf_labeled.columns:
+        rf_labeled = rf_labeled.rename(columns={'pred_raw': 'pred_scaled_rf'})
+    elif 'pred_scaled_rf' not in rf_labeled.columns and 'pred' in rf_labeled.columns:
+        rf_labeled = rf_labeled.rename(columns={'pred': 'pred_scaled_rf'})
     
     if rf_unlabeled_path.exists():
         rf_unlabeled = pd.read_csv(rf_unlabeled_path)
-        rf_unlabeled = rf_unlabeled.rename(columns={'pred': 'pred_scaled_rf'})
+        if 'pred_scaled_rf' not in rf_unlabeled.columns and 'pred' in rf_unlabeled.columns:
+            rf_unlabeled = rf_unlabeled.rename(columns={'pred': 'pred_scaled_rf'})
         rf_df = pd.concat([rf_labeled, rf_unlabeled], ignore_index=True)
         print(f"RF: {len(rf_labeled)} labeled + {len(rf_unlabeled)} unlabeled = {len(rf_df)} total")
     else:
         rf_df = rf_labeled
         print(f"RF: {len(rf_df)} predictions (no unlabeled file found)")
     
-    # Merge on grid_cell_id
-    merged = cat_df[['grid_cell_id', 'pred_scaled_catboost', 'barangay_name_clean', 'target_poverty_rate', 'population']].merge(
-        rf_df[['grid_cell_id', 'pred_scaled_rf']],
-        on='grid_cell_id',
+    # Normalize IDs: convert legacy grid_cell_id (e.g., cell_0001_0021) -> grid_id (e.g., 1_21)
+    def _cell_to_grid_id(val: str) -> str:
+        try:
+            s = str(val)
+            parts = s.replace('cell_', '').split('_')
+            return f"{int(parts[0])}_{int(parts[1])}"
+        except Exception:
+            return str(val)
+
+    if 'grid_id' not in cat_df.columns and 'grid_cell_id' in cat_df.columns:
+        cat_df['grid_id'] = cat_df['grid_cell_id'].apply(_cell_to_grid_id)
+    if 'grid_id' not in rf_df.columns and 'grid_cell_id' in rf_df.columns:
+        rf_df['grid_id'] = rf_df['grid_cell_id'].apply(_cell_to_grid_id)
+
+    # Always use grid_id going forward
+    id_col = 'grid_id'
+    # Drop legacy column to avoid accidental selection downstream
+    if 'grid_cell_id' in cat_df.columns:
+        cat_df = cat_df.drop(columns=['grid_cell_id'])
+    if 'grid_cell_id' in rf_df.columns:
+        rf_df = rf_df.drop(columns=['grid_cell_id'])
+
+    # Merge on chosen ID column
+    cat_merge_cols = [id_col, 'pred_scaled_catboost']
+    if 'barangay_name_clean' in cat_df.columns:
+        cat_merge_cols.append('barangay_name_clean')
+    if 'target_poverty_rate' in cat_df.columns:
+        cat_merge_cols.append('target_poverty_rate')
+    if 'population' in cat_df.columns:
+        cat_merge_cols.append('population')
+
+    rf_merge_cols = [id_col, 'pred_scaled_rf']
+
+    merged = cat_df[cat_merge_cols].merge(
+        rf_df[rf_merge_cols],
+        on=id_col,
         how='outer'
     )
 
@@ -168,11 +208,12 @@ def merge_model_predictions(
         'target_poverty_rate': 'first',
         'population': 'first'
     }
-    merged = merged.groupby('grid_cell_id').agg(agg_dict).reset_index()
+    merged = merged.groupby(id_col).agg(agg_dict).reset_index()
     print(f"After aggregation: {len(merged)} unique grid cells")
     
-    # Rename grid_cell_id to grid_id for app compatibility
-    merged = merged.rename(columns={'grid_cell_id': 'grid_id'})
+    # Rename ID column to grid_id for app compatibility
+    if id_col != 'grid_id':
+        merged = merged.rename(columns={id_col: 'grid_id'})
     
     # Load RAW GEE export to get .geo column (JSON format geometry)
     print(f"Loading raw GEE export from: {raw_gee_export_csv}")
@@ -321,8 +362,9 @@ def merge_model_predictions(
     print(f"  Has .geo column: {'.geo' in final.columns}")
     
     # Create comprehensive data CSV for webapp (with .geo)
+    # NOTE: We merge with existing comprehensive data to preserve geospatial features
     if comprehensive_output_csv and '.geo' in final.columns:
-        # Create grid_with_comprehensive_data.csv with required columns for app.py
+        # Required columns for app.py
         comp_cols = ['grid_id', '.geo', 'barangay_name_clean']
         if 'lon' in final.columns:
             comp_cols.append('lon')
@@ -332,6 +374,17 @@ def merge_model_predictions(
             comp_cols.extend(['x_idx', 'y_idx'])
         
         comprehensive_df = final[[col for col in comp_cols if col in final.columns]].copy()
+        
+        # If existing comprehensive data has more features, merge them in
+        if comprehensive_output_csv.exists():
+            existing = pd.read_csv(comprehensive_output_csv)
+            feature_cols = [c for c in existing.columns if c not in comprehensive_df.columns]
+            if feature_cols:
+                print(f"Preserving {len(feature_cols)} feature columns from existing comprehensive data")
+                # Merge features from existing file
+                existing_features = existing[['grid_id'] + feature_cols]
+                comprehensive_df = comprehensive_df.merge(existing_features, on='grid_id', how='left')
+        
         comprehensive_df.to_csv(comprehensive_output_csv, index=False)
         print(f"Saved comprehensive data to: {comprehensive_output_csv}")
         print(f"  Columns: {comprehensive_df.columns.tolist()}")

@@ -1,0 +1,96 @@
+# Git
+.git
+.github
+.gitignore
+
+# Documentation
+*.md
+DEPLOYMENT.md
+GEE_SECURITY_SETUP.md
+WORKSPACE_STRUCTURE.md
+FIX_APPLIED.md
+PIPELINE_UPDATE_SUMMARY.md
+
+# Development files
+.env
+.env.*
+!.env.production.example
+!.env.example
+
+# Build and deployment
+deploy.sh
+deploy.ps1
+docker-compose.yml
+nginx.conf
+
+# Scripts
+scripts/
+convert-gee-json.*
+
+# Temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.tox
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis
+.pytest_cache
+
+# Virtual environments
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Large data files (keep structure but not actual data)
+googleEarthExports/*
+!googleEarthExports/.gitkeep
+csv_outputs/*
+!csv_outputs/.gitkeep
+temp_scripts/
+storage/
+catboost_info/
+
+# Test files
+tests/
+pytest.ini
+test_response.json
+
+# Backup files
+backups/
+*.backup
+*.bak
+
+# Log files
+*.log
+*.out
+
+# Manual scripts
+manual_merge.py
+analyze_predictions_and_next_steps.py
+investigate_cv_overfitting.py

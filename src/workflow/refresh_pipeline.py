@@ -257,13 +257,18 @@ class RefreshPipeline:
         try:
             from src.model.inference import run_all_models
             
-            preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
+            # Use the authoritative, latest comprehensive grid data produced by
+            # the pipeline for the webapp (data/grid_with_comprehensive_data.csv),
+            # rather than the older snapshot in assets/.
+            preprocessed_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
             
             if not preprocessed_csv.exists():
                 self._update("ERROR", "Preprocessed data not found", 55, error="Missing input file")
                 return False, False
             
-            output_dir = self.webapp_data
+            # Write raw model outputs to the standard output directory; downstream
+            # merge_and_copy_outputs will consume these and create web-ready files.
+            output_dir = self.output_dir
             
             outputs = run_all_models(
                 preprocessed_csv=preprocessed_csv,
@@ -282,10 +287,10 @@ class RefreshPipeline:
             # Run CNN inference if models exist
             self.run_cnn_inference()
             
-            # Inference module creates grid_predictions_comparison.csv directly
-            # Skip merge step and mark as complete
-            self._update("MERGING_DONE", "Predictions already merged by inference module", 90)
-            return True, True  # Success + used inference module
+            # We still rely on merge_and_copy_outputs to perform the geometry-aware
+            # merge and webapp-specific file creation, so mark used_inference_module
+            # as False to ensure that step is executed.
+            return True, False
             
         except ImportError:
             # Fallback: run training scripts which also save predictions

@@ -1,5 +1,20 @@
-import os
+﻿import os
 from pathlib import Path
+
+# Load environment variables from .env files
+try:
+    from dotenv import load_dotenv
+    # Try .env.production first, then .env
+    env_prod = Path(__file__).resolve().parent.parent / ".env.production"
+    env_file = Path(__file__).resolve().parent.parent / ".env"
+    if env_prod.exists():
+        load_dotenv(env_prod)
+        print(f"Loaded environment from {env_prod}")
+    elif env_file.exists():
+        load_dotenv(env_file)
+        print(f"Loaded environment from {env_file}")
+except ImportError:
+    pass  # dotenv not installed, rely on system environment
 
 import sys
 import urllib.request
@@ -22,34 +37,39 @@ try:
 except ImportError:
     # Inline implementation when gee_zc_grid_watcher is not available
     from google.oauth2 import service_account
-    
-    EE_PROJECT_ID = "ee-zc-povertymapping"
-    
-    # Look for service account file in multiple locations
-    _POSSIBLE_SA_PATHS = [
-        Path(__file__).resolve().parent / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
-        Path(__file__).resolve().parent.parent / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
-        Path(__file__).resolve().parent.parent / "data" / "env" / "ee-zc-povertymapping-0c4c39483d32.json",
-        Path("c:/Users/Admin/povmapbackend/env/ee-zc-povertymapping-0c4c39483d32.json"),
-    ]
-    
+    import json as _json
+    import base64 as _b64
+
+    # Project ID from env (EE_PROJECT_ID or GEE_PROJECT_ID), fallback to JSON's project_id later
+    EE_PROJECT_ID = os.environ.get("EE_PROJECT_ID") or os.environ.get("GEE_PROJECT_ID", "ee-zc-povertymapping")
+
     def _get_credentials():
-        """Load service account credentials from the JSON key file."""
+        """Load service account credentials from environment variables only."""
         scopes = [
             "https://www.googleapis.com/auth/earthengine",
-            "https://www.googleapis.com/auth/drive.readonly",
         ]
-        
-        for sa_path in _POSSIBLE_SA_PATHS:
-            if sa_path.exists():
-                return service_account.Credentials.from_service_account_file(
-                    str(sa_path),
-                    scopes=scopes,
-                )
-        
-        raise FileNotFoundError(
-            f"Service account file not found. Searched: {[str(p) for p in _POSSIBLE_SA_PATHS]}"
-        )
+
+        info = None
+
+        b64 = os.environ.get("GEE_PRIVATE_KEY_B64")
+        if b64:
+            try:
+                info = _json.loads(_b64.b64decode(b64))
+            except Exception as e:
+                raise RuntimeError(f"Failed to decode GEE_PRIVATE_KEY_B64: {e}") from e
+
+        if info is None:
+            js = os.environ.get("GEE_PRIVATE_KEY_JSON") or os.environ.get("GEE_SERVICE_ACCOUNT_JSON")
+            if js:
+                try:
+                    info = _json.loads(js)
+                except Exception as e:
+                    raise RuntimeError(f"Invalid JSON in GEE_PRIVATE_KEY_JSON/GEE_SERVICE_ACCOUNT_JSON: {e}") from e
+
+        if info is None:
+            raise RuntimeError("Missing GEE_PRIVATE_KEY_B64 or GEE_PRIVATE_KEY_JSON in environment (no file paths allowed).")
+
+        return service_account.Credentials.from_service_account_info(info, scopes=scopes)
 
 import geemap
 
@@ -133,14 +153,14 @@ else:
     total_area_m2 = gdf.geometry.area.sum()
     total_area_km2 = total_area_m2 / 1_000_000
 
-print(f"Total area of all features: {total_area_km2:.2f} km²")
+print(f"Total area of all features: {total_area_km2:.2f} kmÂ²")
 
 if len(gdf) > 1:
-    print(f"\n⚠️  Shapefile has {len(gdf)} separate features - dissolving into single geometry...")
+    print(f"\nâš ï¸  Shapefile has {len(gdf)} separate features - dissolving into single geometry...")
     update_status("DISSOLVING_SHAPEFILE", f"Dissolving {len(gdf)} features")
     gdf = gdf.dissolve()
     gdf = gdf.reset_index(drop=True)
-    print(f"✓ Dissolved into {len(gdf)} feature(s)")
+    print(f"âœ“ Dissolved into {len(gdf)} feature(s)")
 
 update_status("CONVERTING_SHAPEFILE", "Converting shapefile to Earth Engine FeatureCollection")
 roi = geemap.geopandas_to_ee(gdf)
@@ -523,16 +543,16 @@ grid = load_authoritative_grid_ee()
 print("\n=== GRID DIAGNOSTICS ===")
 grid_size = grid.size().getInfo()
 print(f"Authoritative grid cells loaded: {grid_size}")
-print(f"ROI area: {total_area_km2:.2f} km²")
+print(f"ROI area: {total_area_km2:.2f} kmÂ²")
 print(f"Expected cells (target): 1724")
 print(f"Grid coverage: {grid_size}/1724 = {grid_size/1724:.1%}")
 
 if grid_size == 1724:
-    print("✓ Perfect match with target 1724 cells!")
+    print("âœ“ Perfect match with target 1724 cells!")
 elif grid_size == 1716:
-    print("⚠ Using CNN grid (1716 cells) - will need backfill to reach 1724")
+    print("âš  Using CNN grid (1716 cells) - will need backfill to reach 1724")
 else:
-    print(f"⚠ Unexpected grid size: {grid_size}")
+    print(f"âš  Unexpected grid size: {grid_size}")
 
 print(f"\nOK: Grid loaded from authoritative source")
 update_status("GRID_LOADED", "Authoritative grid loaded successfully")
@@ -783,6 +803,6 @@ if available_grid_cols:
     print(f"Total samples: {len(df_samples)}")
     print(f"Unique grid cells: {unique_grids}")
     print(f"Average samples per cell: {len(df_samples)/unique_grids:.1f}")
-print(f"ROI area: {total_area_km2:.2f} km²")
+print(f"ROI area: {total_area_km2:.2f} kmÂ²")
 print(f"Output: {local_csv_path}")
 print("="*60)

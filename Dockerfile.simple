@@ -1,0 +1,42 @@
+# Simple Dockerfile for Dokploy deployment
+FROM python:3.10-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gdal-bin \
+    libgdal-dev \
+    libproj-dev \
+    libgeos-dev \
+    gcc \
+    g++ \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set GDAL environment variables
+ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
+ENV C_INCLUDE_PATH=/usr/include/gdal
+ENV PYTHONUNBUFFERED=1
+ENV FLASK_ENV=production
+
+# Set working directory
+WORKDIR /app
+
+# Copy and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application source code
+COPY . .
+
+# Create required directories
+RUN mkdir -p data output assets googleEarthExports csv_outputs
+
+# Set proper permissions
+RUN chmod -R 755 /app
+
+# Expose the application port
+EXPOSE 8000
+
+# Start the application
+CMD ["python", "-m", "src.server.app"]
