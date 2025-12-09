@@ -64,6 +64,16 @@ app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-change-me")
 
 
+# Global error handler to log all exceptions
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Log all exceptions for debugging."""
+    import traceback
+    print(f"ERROR: {type(e).__name__}: {str(e)}", flush=True)
+    print(traceback.format_exc(), flush=True)
+    return jsonify({"error": str(e), "type": type(e).__name__}), 500
+
+
 def _get_db_connection() -> sqlite3.Connection:
     USERS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(USERS_DB_PATH)
