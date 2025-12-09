@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Poverty Mapping Application
-FROM python:3.10-slim as base
+from python:3.10-slim as base
 
 # Set working directory
 WORKDIR /app
@@ -26,18 +26,17 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Production stage
-FROM base as production
+FROM base AS production
 
 # Copy application code
 COPY src/ ./src/
-COPY api/ ./api/
 COPY models/ ./models/
 COPY static/ ./static/
 COPY web/ ./web/
 COPY assets/ ./assets/
 
-# Copy specific files needed for runtime
-COPY users.db ./users.db 2>/dev/null || true
+# Copy optional users.db if it exists
+RUN if [ -f users.db ]; then cp users.db ./users.db; fi
 
 # Create necessary directories and set permissions
 RUN mkdir -p data output assets googleEarthExports csv_outputs && \

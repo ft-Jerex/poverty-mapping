@@ -48,6 +48,10 @@ pm_webapp/
 .env.local
 .env.production
 
+# Runtime Generated Logs
+geospatial_prep_status.json
+preprocessing_status.json
+
 # Data files
 # *.csv
 *.geojson
