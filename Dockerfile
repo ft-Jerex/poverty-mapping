@@ -28,19 +28,25 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Production stage
 FROM base AS production
 
-# Copy application code
+# Copy application code and pipeline components
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 COPY models/ ./models/
 COPY static/ ./static/
 COPY web/ ./web/
 COPY assets/ ./assets/
+COPY csv_outputs/ ./csv_outputs/
+COPY googleEarthExports/ ./googleEarthExports/
+COPY output/ ./output/
 
-# Copy optional users.db if it exists
-RUN if [ -f users.db ]; then cp users.db ./users.db; fi
+# Copy config files
+COPY requirements.txt ./
 
 # Create necessary directories and set permissions
-RUN mkdir -p data output assets googleEarthExports csv_outputs && \
-    chmod -R 755 data output assets googleEarthExports csv_outputs
+RUN mkdir -p data && chmod -R 755 data
+
+# Copy users.db if it exists (for pre-seeded users)
+COPY users.db ./data/users.db
 
 # Expose port
 EXPOSE 8000
