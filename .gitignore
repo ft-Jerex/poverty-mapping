@@ -46,6 +46,7 @@ pm_webapp/
 # Local development
 .env
 .env.local
+.env.production
 
 # Data files
 # *.csv
@@ -70,3 +71,4 @@ Thumbs.db
 
 # Project specific
 data/
+output/cnn_reuse_1km_2024/images
