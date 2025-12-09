@@ -1,1 +1,1 @@
-{"phase": "ERROR", "message": "Preprocessing failed: Raw grid export not found at C:\\Users\\Admin\\Downloads\\poverty-mapping-withbackend\\poverty-mapping-withbackend\\scripts\\googleEarthExports\\zc04_grid_data_2024.csv. Run geospatial_prep.py successfully before preprocessing."}
+{"phase": "IDLE", "message": "Ready to run"}
