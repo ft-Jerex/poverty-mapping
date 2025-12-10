@@ -321,6 +321,21 @@ def run_all_models(
     """
     df = pd.read_csv(preprocessed_csv)
 
+    # Basic validation: ensure we have data and at least some geospatial features
+    if df.empty:
+        raise ValueError(f"Preprocessed CSV {preprocessed_csv} has no rows; cannot run inference")
+
+    # If none of the expected geospatial features are present, we cannot reproduce
+    # the training feature space and sklearn will later error with a generic
+    # 'at least one array or dtype is required'. Make this explicit instead.
+    if all(f not in df.columns for f in GEOSPATIAL_FEATURES):
+        sample_cols = list(df.columns)[:40]
+        raise ValueError(
+            "Preprocessed data is missing all expected geospatial feature columns; "
+            f"expected at least one of: {GEOSPATIAL_FEATURES}. "
+            f"Columns present in {preprocessed_csv}: {sample_cols}"
+        )
+
     # Create grid_id if not present
     if 'grid_id' not in df.columns:
         if 'x_idx' in df.columns and 'y_idx' in df.columns:

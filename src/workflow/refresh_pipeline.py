@@ -307,18 +307,20 @@ class RefreshPipeline:
         try:
             from src.model.inference import run_all_models
             
-            # Use the authoritative, latest comprehensive grid data produced by
-            # the pipeline for the webapp (data/grid_with_comprehensive_data.csv),
-            # rather than the older snapshot in assets/.
-            preprocessed_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
+            # Use the comprehensive training dataset with full geospatial
+            # features produced by preprocess_grid_data.py in assets/.
+            # The webapp version in data/ only has geometry + barangay info
+            # and is NOT suitable for model inference.
+            preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
             
             if not preprocessed_csv.exists():
-                # Fall back to assets version if data/ version doesn't exist yet
-                preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
-                if not preprocessed_csv.exists():
-                    self._update("ERROR", "Preprocessed data not found in data/ or assets/", 55, error="Missing input file")
-                    return False, False
-                print(f"Using fallback preprocessed data from assets/")
+                self._update(
+                    "ERROR",
+                    "Preprocessed data not found in assets/grid_with_comprehensive_data.csv",
+                    55,
+                    error="Missing input file",
+                )
+                return False, False
             
             # Write raw model outputs to the standard output directory; downstream
             # merge_and_copy_outputs will consume these and create web-ready files.
