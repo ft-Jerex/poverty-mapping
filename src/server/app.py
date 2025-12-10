@@ -2175,6 +2175,25 @@ def api_refresh_status() -> object:
         })
 
 
+@app.route("/api/refresh/cancel", methods=["POST"])
+def api_refresh_cancel() -> object:
+    """Cancel an ongoing refresh."""
+    user = _get_current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    
+    try:
+        from src.workflow.refresh_pipeline import cancel_refresh, is_refresh_running
+        
+        if not is_refresh_running():
+            return jsonify({"success": False, "error": "No refresh in progress"})
+        
+        cancel_refresh()
+        return jsonify({"success": True, "message": "Refresh cancelled"})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 @app.route("/api/refresh/history", methods=["GET"])
 def api_refresh_history() -> object:
     """Get refresh history."""

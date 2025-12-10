@@ -104,6 +104,7 @@ const refreshProgressBar = document.getElementById("refresh-progress-bar");
 const refreshProgressMessage = document.getElementById("refresh-progress-message");
 const refreshProgressError = document.getElementById("refresh-progress-error");
 const refreshProgressCloseBtn = document.getElementById("refresh-progress-close-btn");
+const refreshCancelProgressBtn = document.getElementById("refresh-cancel-progress-btn");
 
 const refreshWarningModal = document.getElementById("refresh-warning-modal");
 const refreshWarningText = document.getElementById("refresh-warning-text");
@@ -2307,6 +2308,8 @@ async function startRefresh(startDate, endDate, force) {
     refreshProgressModal.classList.remove('hidden');
     updateRefreshProgress('STARTING', 'Initiating refresh...', 0);
     if (refreshProgressCloseBtn) refreshProgressCloseBtn.classList.add('hidden');
+    // Show cancel button when starting
+    if (refreshCancelProgressBtn) refreshCancelProgressBtn.classList.remove('hidden');
     if (refreshProgressError) {
       refreshProgressError.textContent = '';
       refreshProgressError.classList.add('hidden');
@@ -2443,6 +2446,12 @@ function showRefreshError(errorMessage) {
   if (refreshProgressPhase) refreshProgressPhase.textContent = 'Error';
   if (refreshProgressBar) refreshProgressBar.classList.remove('bg-emerald-500');
   if (refreshProgressBar) refreshProgressBar.classList.add('bg-red-500');
+  
+  // Hide cancel button on error
+  if (refreshCancelProgressBtn) {
+    refreshCancelProgressBtn.classList.add('hidden');
+  }
+  
   if (refreshProgressCloseBtn) refreshProgressCloseBtn.classList.remove('hidden');
   
   if (refreshProgressCloseBtn) {
@@ -2460,6 +2469,11 @@ function showRefreshError(errorMessage) {
 async function showRefreshComplete(message) {
   updateRefreshProgress('COMPLETED', message, 100);
   
+  // Hide cancel button when complete
+  if (refreshCancelProgressBtn) {
+    refreshCancelProgressBtn.classList.add('hidden');
+  }
+  
   if (refreshProgressCloseBtn) {
     refreshProgressCloseBtn.classList.remove('hidden');
     refreshProgressCloseBtn.textContent = 'Done';
@@ -2473,6 +2487,38 @@ async function showRefreshComplete(message) {
       setStatus('Predictions refreshed successfully!');
     };
   }
+}
+
+async function cancelRefresh() {
+  try {
+    const res = await fetch('/api/refresh/cancel', { method: 'POST' });
+    const data = await res.json();
+    
+    if (data.success) {
+      stopRefreshPolling();
+      updateRefreshProgress('CANCELLED', 'Refresh cancelled by user', 0);
+      
+      if (refreshCancelProgressBtn) {
+        refreshCancelProgressBtn.classList.add('hidden');
+      }
+      if (refreshProgressCloseBtn) {
+        refreshProgressCloseBtn.classList.remove('hidden');
+        refreshProgressCloseBtn.textContent = 'Close';
+        refreshProgressCloseBtn.onclick = () => {
+          if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+        };
+      }
+    } else {
+      console.error('Failed to cancel refresh:', data.error);
+    }
+  } catch (err) {
+    console.error('Error cancelling refresh:', err);
+  }
+}
+
+// Set up cancel button handler
+if (refreshCancelProgressBtn) {
+  refreshCancelProgressBtn.addEventListener('click', cancelRefresh);
 }
 
 // Legacy function for backward compatibility

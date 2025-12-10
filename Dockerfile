@@ -45,13 +45,11 @@ COPY requirements.txt ./
 # Create necessary directories and set permissions
 RUN mkdir -p data && chmod -R 755 data
 
-# Copy users.db if it exists (for pre-seeded users)
-COPY users.db ./data/users.db
+# Copy data directory with prediction files (required for webapp)
+COPY data/ ./data/
 
-# Copy required webapp data files from assets to data directory
-# These are needed for the webapp to display predictions
-RUN cp -r assets/shapefile data/shapefile || true && \
-    cp assets/shapefile/grid_cells.geojson data/grid_1km_all.gpkg || true
+# Ensure shapefile directory exists in data
+RUN cp -r assets/shapefile data/shapefile 2>/dev/null || true
 
 # Expose port
 EXPOSE 8000

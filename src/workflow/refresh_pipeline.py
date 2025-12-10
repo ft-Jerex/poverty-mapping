@@ -109,7 +109,31 @@ def is_refresh_running() -> bool:
     if _current_refresh_thread is not None and _current_refresh_thread.is_alive():
         return True
     status = get_status()
-    return status.get("phase") not in ("IDLE", "COMPLETED", "ERROR", None)
+    return status.get("phase") not in ("IDLE", "COMPLETED", "ERROR", "CANCELLED", None)
+
+
+# Global flag to signal cancellation
+_cancel_requested = False
+
+
+def cancel_refresh() -> bool:
+    """Request cancellation of the current refresh."""
+    global _cancel_requested
+    _cancel_requested = True
+    _update_status("CANCELLED", "Refresh cancelled by user", 0)
+    return True
+
+
+def is_cancel_requested() -> bool:
+    """Check if cancellation has been requested."""
+    global _cancel_requested
+    return _cancel_requested
+
+
+def reset_cancel_flag():
+    """Reset the cancellation flag."""
+    global _cancel_requested
+    _cancel_requested = False
 
 
 class RefreshPipeline:
@@ -479,7 +503,7 @@ class RefreshPipeline:
             output_geojson = self.webapp_data / "grid_with_comprehensive_data.geojson"
             comprehensive_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
             # Webapp expects this specific filename for predictions
-            webapp_predictions_csv = self.webapp_data / "gpkg_complete_predictions.csv"
+            webapp_predictions_csv = self.webapp_data / "complete_grid_predictions.csv"
             
             merge_model_predictions(
                 catboost_predictions_csv=catboost_preds or rf_preds,  # Use whichever exists
