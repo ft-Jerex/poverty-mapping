@@ -307,20 +307,18 @@ class RefreshPipeline:
         try:
             from src.model.inference import run_all_models
             
-            # Use the comprehensive training dataset with full geospatial
-            # features produced by preprocess_grid_data.py in assets/.
-            # The webapp version in data/ only has geometry + barangay info
-            # and is NOT suitable for model inference.
-            preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
+            # Use the authoritative, latest comprehensive grid data produced by
+            # the pipeline for the webapp (data/grid_with_comprehensive_data.csv),
+            # rather than the older snapshot in assets/.
+            preprocessed_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
             
             if not preprocessed_csv.exists():
-                self._update(
-                    "ERROR",
-                    "Preprocessed data not found in assets/grid_with_comprehensive_data.csv",
-                    55,
-                    error="Missing input file",
-                )
-                return False, False
+                # Fall back to assets version if data/ version doesn't exist yet
+                preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
+                if not preprocessed_csv.exists():
+                    self._update("ERROR", "Preprocessed data not found in data/ or assets/", 55, error="Missing input file")
+                    return False, False
+                print(f"Using fallback preprocessed data from assets/")
             
             # Write raw model outputs to the standard output directory; downstream
             # merge_and_copy_outputs will consume these and create web-ready files.
@@ -505,7 +503,7 @@ class RefreshPipeline:
             output_geojson = self.webapp_data / "grid_with_comprehensive_data.geojson"
             comprehensive_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
             # Webapp expects this specific filename for predictions
-            webapp_predictions_csv = self.webapp_data / "complete_grid_predictions.csv"
+            webapp_predictions_csv = self.webapp_data / "gpkg_complete_predictions.csv"
             
             merge_model_predictions(
                 catboost_predictions_csv=catboost_preds or rf_preds,  # Use whichever exists
@@ -563,12 +561,16 @@ class RefreshPipeline:
                 shutil.copytree(shapefile_src, shapefile_dst)
                 print(f"Copied shapefile directory to {shapefile_dst}")
             
-            # Ensure gpkg_complete_predictions.csv exists (copy from grid_predictions_comparison.csv if needed)
-            predictions_dst = self.webapp_data / "gpkg_complete_predictions.csv"
+            # Ensure all expected prediction filenames exist
+            # The webapp expects: complete_grid_predictions.csv
             predictions_src = self.webapp_data / "grid_predictions_comparison.csv"
-            if not predictions_dst.exists() and predictions_src.exists():
-                shutil.copy2(predictions_src, predictions_dst)
-                print(f"Copied predictions to {predictions_dst}")
+            if predictions_src.exists():
+                # Copy to all expected filenames
+                for dst_name in ["complete_grid_predictions.csv", "gpkg_complete_predictions.csv"]:
+                    dst = self.webapp_data / dst_name
+                    if not dst.exists():
+                        shutil.copy2(predictions_src, dst)
+                        print(f"Copied predictions to {dst}")
             
             self._update("COPYING_DONE", "Supporting files copied", 95)
             return True
