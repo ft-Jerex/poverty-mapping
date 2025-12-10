@@ -2356,10 +2356,22 @@ function startRefreshPolling() {
     clearInterval(refreshPollingInterval);
   }
   
-  // Poll every 2 seconds
+  // Poll every 3 seconds (slower to reduce server load)
   refreshPollingInterval = setInterval(async () => {
     try {
-      const res = await fetch('/api/refresh/status');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+      
+      const res = await fetch('/api/refresh/status', { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
+      // Handle non-OK responses gracefully
+      if (!res.ok) {
+        console.warn('Refresh status returned non-OK:', res.status);
+        // Don't stop polling on timeout - server might be busy
+        return;
+      }
+      
       const data = await res.json();
       
       const phase = data.phase || 'UNKNOWN';
@@ -2378,9 +2390,15 @@ function startRefreshPolling() {
       }
       
     } catch (err) {
-      console.error('Error polling refresh status:', err);
+      // Handle timeout/abort errors gracefully - don't spam console
+      if (err.name === 'AbortError') {
+        console.warn('Refresh status poll timed out - server may be busy');
+      } else {
+        console.error('Error polling refresh status:', err);
+      }
+      // Continue polling - don't stop on transient errors
     }
-  }, 2000);
+  }, 3000);
 }
 
 function stopRefreshPolling() {

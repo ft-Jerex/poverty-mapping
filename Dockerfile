@@ -60,5 +60,7 @@ ENV PYTHONUNBUFFERED=1
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the application
-CMD ["python", "-m", "src.server.app"]
+# Run the application with gunicorn (production WSGI server)
+# Use 2 workers and 4 threads per worker for better concurrency
+# Timeout of 120s to handle long-running status checks during refresh
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "120", "src.server.app:app"]
