@@ -48,6 +48,11 @@ RUN mkdir -p data && chmod -R 755 data
 # Copy users.db if it exists (for pre-seeded users)
 COPY users.db ./data/users.db
 
+# Copy required webapp data files from assets to data directory
+# These are needed for the webapp to display predictions
+RUN cp -r assets/shapefile data/shapefile || true && \
+    cp assets/shapefile/grid_cells.geojson data/grid_1km_all.gpkg || true
+
 # Expose port
 EXPOSE 8000
 

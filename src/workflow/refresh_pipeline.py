@@ -511,25 +511,45 @@ class RefreshPipeline:
         self._update("COPYING", "Step 5/5: Finalizing and saving results...", 92)
         
         try:
-            # Copy grid gpkg if exists
-            grid_gpkg_src = self.output_dir / "grids" / "grid_1km.gpkg"
+            # Ensure webapp data directory exists
+            self.webapp_data.mkdir(parents=True, exist_ok=True)
+            
+            # Copy grid gpkg - check multiple sources
             grid_gpkg_dst = self.webapp_data / "grid_1km_all.gpkg"
+            grid_gpkg_sources = [
+                self.output_dir / "grids" / "grid_1km.gpkg",
+                self.assets_dir / "shapefile" / "grid_cells.gpkg",
+                self.project_root / "data" / "grid_1km_all.gpkg",
+            ]
             
-            if grid_gpkg_src.exists():
-                shutil.copy2(grid_gpkg_src, grid_gpkg_dst)
+            if not grid_gpkg_dst.exists():
+                for src in grid_gpkg_sources:
+                    if src.exists():
+                        shutil.copy2(src, grid_gpkg_dst)
+                        print(f"Copied grid GPKG from {src}")
+                        break
             
-            # Copy shapefile directory if not already present
+            # Copy shapefile directory
             shapefile_src = self.assets_dir / "shapefile"
             shapefile_dst = self.webapp_data / "shapefile"
             
             if shapefile_src.exists() and not shapefile_dst.exists():
                 shutil.copytree(shapefile_src, shapefile_dst)
+                print(f"Copied shapefile directory to {shapefile_dst}")
+            
+            # Ensure gpkg_complete_predictions.csv exists (copy from grid_predictions_comparison.csv if needed)
+            predictions_dst = self.webapp_data / "gpkg_complete_predictions.csv"
+            predictions_src = self.webapp_data / "grid_predictions_comparison.csv"
+            if not predictions_dst.exists() and predictions_src.exists():
+                shutil.copy2(predictions_src, predictions_dst)
+                print(f"Copied predictions to {predictions_dst}")
             
             self._update("COPYING_DONE", "Supporting files copied", 95)
             return True
             
         except Exception as e:
             self._update("WARNING", f"Copy warning: {str(e)}", 92)
+            print(f"Copy supporting files error: {e}")
             # Non-fatal error
             return True
     
