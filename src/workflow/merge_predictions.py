@@ -112,52 +112,65 @@ def merge_model_predictions(
     Returns:
         Merged DataFrame
     """
-    # Load predictions from BOTH labeled and unlabeled files
-    cat_labeled = pd.read_csv(catboost_predictions_csv)
-    rf_labeled = pd.read_csv(rf_predictions_csv)
+    cat_df = None
+    rf_df = None
     
-    # Load unlabeled predictions if they exist (legacy training outputs)
-    cat_unlabeled_path = catboost_predictions_csv.parent / "unlabeled_grid_predictions.csv"
-    rf_unlabeled_path = rf_predictions_csv.parent / "unlabeled_grid_predictions.csv"
-    
-    # Prepare CatBoost predictions
-    # Legacy format: grid_cell_id + pred_raw / __target__
-    if 'pred_raw' in cat_labeled.columns:
-        cat_labeled = cat_labeled.rename(columns={
-            'pred_raw': 'pred_scaled_catboost',
-            '__target__': 'target_poverty_rate',
-        })
-    elif 'pred_scaled_catboost' not in cat_labeled.columns and 'pred' in cat_labeled.columns:
-        # Fallback: rename generic pred column
-        cat_labeled = cat_labeled.rename(columns={'pred': 'pred_scaled_catboost'})
-    
-    if cat_unlabeled_path.exists():
-        cat_unlabeled = pd.read_csv(cat_unlabeled_path)
-        if 'pred_scaled_catboost' not in cat_unlabeled.columns and 'pred' in cat_unlabeled.columns:
-            cat_unlabeled = cat_unlabeled.rename(columns={'pred': 'pred_scaled_catboost'})
-        cat_unlabeled['target_poverty_rate'] = None
-        cat_unlabeled['population'] = None
-        cat_df = pd.concat([cat_labeled, cat_unlabeled], ignore_index=True)
-        print(f"CatBoost: {len(cat_labeled)} labeled + {len(cat_unlabeled)} unlabeled = {len(cat_df)} total")
+    # Load CatBoost predictions if provided
+    if catboost_predictions_csv is not None and Path(catboost_predictions_csv).exists():
+        cat_labeled = pd.read_csv(catboost_predictions_csv)
+        cat_unlabeled_path = Path(catboost_predictions_csv).parent / "unlabeled_grid_predictions.csv"
+        
+        # Prepare CatBoost predictions
+        # Legacy format: grid_cell_id + pred_raw / __target__
+        if 'pred_raw' in cat_labeled.columns:
+            cat_labeled = cat_labeled.rename(columns={
+                'pred_raw': 'pred_scaled_catboost',
+                '__target__': 'target_poverty_rate',
+            })
+        elif 'pred_scaled_catboost' not in cat_labeled.columns and 'pred' in cat_labeled.columns:
+            # Fallback: rename generic pred column
+            cat_labeled = cat_labeled.rename(columns={'pred': 'pred_scaled_catboost'})
+        
+        if cat_unlabeled_path.exists():
+            cat_unlabeled = pd.read_csv(cat_unlabeled_path)
+            if 'pred_scaled_catboost' not in cat_unlabeled.columns and 'pred' in cat_unlabeled.columns:
+                cat_unlabeled = cat_unlabeled.rename(columns={'pred': 'pred_scaled_catboost'})
+            cat_unlabeled['target_poverty_rate'] = None
+            cat_unlabeled['population'] = None
+            cat_df = pd.concat([cat_labeled, cat_unlabeled], ignore_index=True)
+            print(f"CatBoost: {len(cat_labeled)} labeled + {len(cat_unlabeled)} unlabeled = {len(cat_df)} total")
+        else:
+            cat_df = cat_labeled
+            print(f"CatBoost: {len(cat_df)} predictions (no unlabeled file found)")
     else:
-        cat_df = cat_labeled
-        print(f"CatBoost: {len(cat_df)} predictions (no unlabeled file found)")
+        print("WARNING: No CatBoost predictions provided - will be missing from output")
     
-    # Prepare RF predictions
-    if 'pred_raw' in rf_labeled.columns:
-        rf_labeled = rf_labeled.rename(columns={'pred_raw': 'pred_scaled_rf'})
-    elif 'pred_scaled_rf' not in rf_labeled.columns and 'pred' in rf_labeled.columns:
-        rf_labeled = rf_labeled.rename(columns={'pred': 'pred_scaled_rf'})
-    
-    if rf_unlabeled_path.exists():
-        rf_unlabeled = pd.read_csv(rf_unlabeled_path)
-        if 'pred_scaled_rf' not in rf_unlabeled.columns and 'pred' in rf_unlabeled.columns:
-            rf_unlabeled = rf_unlabeled.rename(columns={'pred': 'pred_scaled_rf'})
-        rf_df = pd.concat([rf_labeled, rf_unlabeled], ignore_index=True)
-        print(f"RF: {len(rf_labeled)} labeled + {len(rf_unlabeled)} unlabeled = {len(rf_df)} total")
+    # Load RF predictions if provided
+    if rf_predictions_csv is not None and Path(rf_predictions_csv).exists():
+        rf_labeled = pd.read_csv(rf_predictions_csv)
+        rf_unlabeled_path = Path(rf_predictions_csv).parent / "unlabeled_grid_predictions.csv"
+        
+        # Prepare RF predictions
+        if 'pred_raw' in rf_labeled.columns:
+            rf_labeled = rf_labeled.rename(columns={'pred_raw': 'pred_scaled_rf'})
+        elif 'pred_scaled_rf' not in rf_labeled.columns and 'pred' in rf_labeled.columns:
+            rf_labeled = rf_labeled.rename(columns={'pred': 'pred_scaled_rf'})
+        
+        if rf_unlabeled_path.exists():
+            rf_unlabeled = pd.read_csv(rf_unlabeled_path)
+            if 'pred_scaled_rf' not in rf_unlabeled.columns and 'pred' in rf_unlabeled.columns:
+                rf_unlabeled = rf_unlabeled.rename(columns={'pred': 'pred_scaled_rf'})
+            rf_df = pd.concat([rf_labeled, rf_unlabeled], ignore_index=True)
+            print(f"RF: {len(rf_labeled)} labeled + {len(rf_unlabeled)} unlabeled = {len(rf_df)} total")
+        else:
+            rf_df = rf_labeled
+            print(f"RF: {len(rf_df)} predictions (no unlabeled file found)")
     else:
-        rf_df = rf_labeled
-        print(f"RF: {len(rf_df)} predictions (no unlabeled file found)")
+        print("WARNING: No RF predictions provided - will be missing from output")
+    
+    # Check if we have at least one model's predictions
+    if cat_df is None and rf_df is None:
+        raise ValueError("Neither CatBoost nor RF predictions provided - cannot merge")
     
     # Normalize IDs: convert legacy grid_cell_id (e.g., cell_0001_0021) -> grid_id (e.g., 1_21)
     def _cell_to_grid_id(val: str) -> str:
@@ -168,35 +181,45 @@ def merge_model_predictions(
         except Exception:
             return str(val)
 
-    if 'grid_id' not in cat_df.columns and 'grid_cell_id' in cat_df.columns:
-        cat_df['grid_id'] = cat_df['grid_cell_id'].apply(_cell_to_grid_id)
-    if 'grid_id' not in rf_df.columns and 'grid_cell_id' in rf_df.columns:
-        rf_df['grid_id'] = rf_df['grid_cell_id'].apply(_cell_to_grid_id)
+    if cat_df is not None:
+        if 'grid_id' not in cat_df.columns and 'grid_cell_id' in cat_df.columns:
+            cat_df['grid_id'] = cat_df['grid_cell_id'].apply(_cell_to_grid_id)
+        if 'grid_cell_id' in cat_df.columns:
+            cat_df = cat_df.drop(columns=['grid_cell_id'])
+    
+    if rf_df is not None:
+        if 'grid_id' not in rf_df.columns and 'grid_cell_id' in rf_df.columns:
+            rf_df['grid_id'] = rf_df['grid_cell_id'].apply(_cell_to_grid_id)
+        if 'grid_cell_id' in rf_df.columns:
+            rf_df = rf_df.drop(columns=['grid_cell_id'])
 
     # Always use grid_id going forward
     id_col = 'grid_id'
-    # Drop legacy column to avoid accidental selection downstream
-    if 'grid_cell_id' in cat_df.columns:
-        cat_df = cat_df.drop(columns=['grid_cell_id'])
-    if 'grid_cell_id' in rf_df.columns:
-        rf_df = rf_df.drop(columns=['grid_cell_id'])
-
-    # Merge on chosen ID column
-    cat_merge_cols = [id_col, 'pred_scaled_catboost']
-    if 'barangay_name_clean' in cat_df.columns:
-        cat_merge_cols.append('barangay_name_clean')
-    if 'target_poverty_rate' in cat_df.columns:
-        cat_merge_cols.append('target_poverty_rate')
-    if 'population' in cat_df.columns:
-        cat_merge_cols.append('population')
-
-    rf_merge_cols = [id_col, 'pred_scaled_rf']
-
-    merged = cat_df[cat_merge_cols].merge(
-        rf_df[rf_merge_cols],
-        on=id_col,
-        how='outer'
-    )
+    
+    # Build merged dataframe based on what's available
+    if cat_df is not None and rf_df is not None:
+        # Both models available - merge them
+        cat_merge_cols = [id_col, 'pred_scaled_catboost']
+        if 'barangay_name_clean' in cat_df.columns:
+            cat_merge_cols.append('barangay_name_clean')
+        if 'target_poverty_rate' in cat_df.columns:
+            cat_merge_cols.append('target_poverty_rate')
+        if 'population' in cat_df.columns:
+            cat_merge_cols.append('population')
+        rf_merge_cols = [id_col, 'pred_scaled_rf']
+        merged = cat_df[cat_merge_cols].merge(
+            rf_df[rf_merge_cols],
+            on=id_col,
+            how='outer'
+        )
+    elif cat_df is not None:
+        # Only CatBoost available
+        merged = cat_df.copy()
+        merged['pred_scaled_rf'] = None  # Placeholder for missing RF
+    else:
+        # Only RF available
+        merged = rf_df.copy()
+        merged['pred_scaled_catboost'] = None  # Placeholder for missing CatBoost
 
     print(f"Merged {len(merged)} predictions (before aggregation)")
     

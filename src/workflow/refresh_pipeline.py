@@ -487,15 +487,24 @@ class RefreshPipeline:
             
             # Check if prediction files exist
             if not catboost_preds.exists():
-                self._update("WARNING", "CatBoost predictions not found, skipping merge", 80)
+                self._update("WARNING", "CatBoost predictions not found at expected path", 80)
+                print(f"Expected CatBoost predictions at: {catboost_preds}")
                 catboost_preds = None
             if not rf_preds.exists():
-                self._update("WARNING", "RF predictions not found, skipping merge", 80)
+                self._update("WARNING", "RF predictions not found at expected path", 80)
+                print(f"Expected RF predictions at: {rf_preds}")
                 rf_preds = None
             
             if catboost_preds is None and rf_preds is None:
                 self._update("ERROR", "No prediction files found to merge", 80, error="Missing predictions")
                 return False
+            
+            # IMPORTANT: Do NOT use same file for both models - this causes identical predictions bug
+            # If one is missing, pass None and let merge handle it properly
+            if catboost_preds is None:
+                print("WARNING: CatBoost predictions missing - RF predictions will be used alone")
+            if rf_preds is None:
+                print("WARNING: RF predictions missing - CatBoost predictions will be used alone")
             
             if not raw_gee_export.exists():
                 # Fallback: continue merge without .geo; frontend will still show predictions
@@ -508,8 +517,8 @@ class RefreshPipeline:
             webapp_predictions_csv = self.webapp_data / "gpkg_complete_predictions.csv"
             
             merge_model_predictions(
-                catboost_predictions_csv=catboost_preds or rf_preds,  # Use whichever exists
-                rf_predictions_csv=rf_preds or catboost_preds,
+                catboost_predictions_csv=catboost_preds,  # Pass None if missing, don't substitute
+                rf_predictions_csv=rf_preds,  # Pass None if missing, don't substitute
                 grid_data_csv=grid_data,
                 raw_gee_export_csv=raw_gee_export,
                 output_csv=output_csv,
