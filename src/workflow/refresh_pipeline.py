@@ -289,8 +289,12 @@ class RefreshPipeline:
             preprocessed_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
             
             if not preprocessed_csv.exists():
-                self._update("ERROR", "Preprocessed data not found", 55, error="Missing input file")
-                return False, False
+                # Fall back to assets version if data/ version doesn't exist yet
+                preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
+                if not preprocessed_csv.exists():
+                    self._update("ERROR", "Preprocessed data not found in data/ or assets/", 55, error="Missing input file")
+                    return False, False
+                print(f"Using fallback preprocessed data from assets/")
             
             # Write raw model outputs to the standard output directory; downstream
             # merge_and_copy_outputs will consume these and create web-ready files.
