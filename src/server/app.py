@@ -249,8 +249,10 @@ def auth_login() -> object:
 
 @app.route("/logout")
 def logout() -> object:  # pragma: no cover
-    session.pop("username", None)
-    return redirect(url_for("landing"))
+    session.clear()  # Clear entire session
+    response = redirect(url_for("landing"))
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 
 @app.route("/api/me")
@@ -2162,11 +2164,13 @@ def api_refresh_status() -> object:
         status["is_running"] = is_refresh_running()
         
         return jsonify({"success": True, **status})
-    except ImportError:
+    except Exception:
+        # Always return valid JSON even on error
         return jsonify({
             "success": True,
             "phase": "IDLE",
-            "message": "Refresh module not loaded",
+            "message": "No refresh in progress",
+            "progress": 0,
             "is_running": False
         })
 

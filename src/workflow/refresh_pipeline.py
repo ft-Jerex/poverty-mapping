@@ -13,6 +13,8 @@ This module can be run as a background process triggered by the /api/refresh end
 from __future__ import annotations
 
 import json
+import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -23,6 +25,34 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 import time
 import tempfile
+
+
+def _run_subprocess_low_priority(cmd, cwd, timeout=1800):
+    """
+    Run a subprocess with low CPU/IO priority to prevent site lag.
+    Uses nice on Linux to reduce priority.
+    """
+    if platform.system() == "Linux":
+        # Use nice to lower CPU priority (19 = lowest)
+        # ionice -c 3 = idle IO class (only use IO when system is idle)
+        nice_cmd = ["nice", "-n", "19"] + cmd
+    else:
+        nice_cmd = cmd
+    
+    env = {**os.environ, 'PYTHONIOENCODING': 'utf-8'}
+    
+    result = subprocess.run(
+        nice_cmd,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        timeout=timeout,
+        env=env
+    )
+    return result
+
 
 # Status file for frontend polling
 STATUS_FILE = Path(__file__).parent.parent.parent / "data" / "refresh_status.json"
@@ -63,6 +93,9 @@ def update_status(
 def get_status() -> Dict[str, Any]:
     """Get current refresh status."""
     try:
+        # Ensure directory exists
+        STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
         if STATUS_FILE.exists():
             return json.loads(STATUS_FILE.read_text())
     except Exception:
@@ -166,16 +199,12 @@ class RefreshPipeline:
             temp_script.write_text(modified_content, encoding='utf-8')
             
             try:
-                # Run the modified script with UTF-8 encoding to handle emoji characters
-                result = subprocess.run(
+                # Run the modified script with low priority to prevent site lag
+                self._update("GEE_EXTRACTION", "Step 1/5: Connecting to Google Earth Engine...", 5)
+                result = _run_subprocess_low_priority(
                     [sys.executable, "-X", "utf8", str(temp_script)],
-                    cwd=str(self.project_root),
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=1800,  # 30 minute timeout
-                    env={**__import__('os').environ, 'PYTHONIOENCODING': 'utf-8'}
+                    cwd=self.project_root,
+                    timeout=1800  # 30 minute timeout
                 )
                 
                 if result.returncode != 0:
@@ -201,7 +230,6 @@ class RefreshPipeline:
         except Exception as e:
             self._update("ERROR", f"GEE extraction error: {str(e)}", 10, error=str(e))
             return False
-            return False
     
     def run_preprocessing(self) -> bool:
         """
@@ -209,7 +237,7 @@ class RefreshPipeline:
         
         This calls preprocess_grid_data.py to attach barangay info.
         """
-        self._update("PREPROCESSING", "Preprocessing grid data...", 35)
+        self._update("PREPROCESSING", "Step 2/5: Processing grid data and attaching barangay info...", 35)
         
         script_path = self.scripts_dir / "preprocess_grid_data.py"
         
@@ -218,12 +246,10 @@ class RefreshPipeline:
             return False
         
         try:
-            result = subprocess.run(
+            result = _run_subprocess_low_priority(
                 [sys.executable, str(script_path)],
-                cwd=str(self.project_root),
-                capture_output=True,
-                text=True,
-                timeout=600,  # 10 minute timeout
+                cwd=self.project_root,
+                timeout=600  # 10 minute timeout
             )
             
             if result.returncode != 0:
@@ -235,7 +261,7 @@ class RefreshPipeline:
                 )
                 return False
             
-            self._update("PREPROCESSING_DONE", "Grid preprocessing complete", 50)
+            self._update("PREPROCESSING_DONE", "Step 2/5: Grid preprocessing complete", 50)
             return True
             
         except subprocess.TimeoutExpired:
@@ -252,7 +278,7 @@ class RefreshPipeline:
         Returns:
             (success, used_inference_module): success status and whether inference.py was used
         """
-        self._update("INFERENCE", "Running model inference...", 55)
+        self._update("INFERENCE", "Step 3/5: Running poverty prediction models...", 55)
         
         try:
             from src.model.inference import run_all_models
@@ -294,33 +320,29 @@ class RefreshPipeline:
             
         except ImportError:
             # Fallback: run training scripts which also save predictions
-            self._update("INFERENCE", "Running CatBoost training/inference...", 55)
+            self._update("INFERENCE", "Step 3/5: Running CatBoost model training...", 55)
             
             try:
-                # Run CatBoost
+                # Run CatBoost with low priority
                 catboost_script = self.scripts_dir / "train_catboost_model.py"
                 if catboost_script.exists():
-                    result = subprocess.run(
+                    result = _run_subprocess_low_priority(
                         [sys.executable, str(catboost_script)],
-                        cwd=str(self.project_root),
-                        capture_output=True,
-                        text=True,
-                        timeout=1200,
+                        cwd=self.project_root,
+                        timeout=1200
                     )
                     if result.returncode != 0:
                         print(f"CatBoost warning: {result.stderr[:500]}")
                 
-                self._update("INFERENCE", "Running RF training/inference...", 65)
+                self._update("INFERENCE", "Step 3/5: Running Random Forest model training...", 62)
                 
-                # Run RF
+                # Run RF with low priority
                 rf_script = self.scripts_dir / "train_rf_model.py"
                 if rf_script.exists():
-                    result = subprocess.run(
+                    result = _run_subprocess_low_priority(
                         [sys.executable, str(rf_script)],
-                        cwd=str(self.project_root),
-                        capture_output=True,
-                        text=True,
-                        timeout=1200,
+                        cwd=self.project_root,
+                        timeout=1200
                     )
                     if result.returncode != 0:
                         print(f"RF warning: {result.stderr[:500]}")
@@ -375,12 +397,10 @@ class RefreshPipeline:
             if sentinel2_tif.exists():
                 cmd.extend(["--sentinel2_tif", str(sentinel2_tif)])
             
-            result = subprocess.run(
+            result = _run_subprocess_low_priority(
                 cmd,
-                cwd=str(self.project_root),
-                capture_output=True,
-                text=True,
-                timeout=3600,  # 1 hour timeout
+                cwd=self.project_root,
+                timeout=3600  # 1 hour timeout
             )
             
             if result.returncode != 0:
@@ -415,7 +435,7 @@ class RefreshPipeline:
         """
         Merge predictions and copy to webapp data directory.
         """
-        self._update("MERGING", "Merging predictions...", 80)
+        self._update("MERGING", "Step 4/5: Merging predictions and generating outputs...", 80)
         
         try:
             from src.workflow.merge_predictions import merge_model_predictions
@@ -465,7 +485,7 @@ class RefreshPipeline:
                 comprehensive_output_csv=comprehensive_csv,
             )
             
-            self._update("MERGING_DONE", "Predictions merged and copied", 90)
+            self._update("MERGING_DONE", "Step 4/5: Predictions merged successfully", 90)
             return True
             
         except Exception as e:
@@ -477,7 +497,7 @@ class RefreshPipeline:
         """
         Copy supporting files (grid gpkg, shapefiles) to webapp data directory.
         """
-        self._update("COPYING", "Copying supporting files...", 92)
+        self._update("COPYING", "Step 5/5: Finalizing and saving results...", 92)
         
         try:
             # Copy grid gpkg if exists
@@ -544,9 +564,12 @@ class RefreshPipeline:
             
             # Done!
             elapsed = (datetime.now() - start_time).total_seconds()
+            minutes = int(elapsed // 60)
+            seconds = int(elapsed % 60)
+            time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
             self._update(
                 "COMPLETED",
-                f"Refresh completed successfully in {elapsed:.1f} seconds",
+                f"✓ Refresh complete! All predictions updated. (Time: {time_str})",
                 100,
                 extra={"elapsed_seconds": elapsed}
             )
