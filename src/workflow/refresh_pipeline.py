@@ -187,9 +187,23 @@ class RefreshPipeline:
     
     def _update(self, phase: str, message: str, progress: int, **kwargs):
         """Update status and call callback if provided."""
+        # Check if cancellation was requested
+        if is_cancel_requested() and phase not in ("CANCELLED", "ERROR", "COMPLETED"):
+            update_status("CANCELLED", "Refresh cancelled by user", progress)
+            if self.callback:
+                self.callback("Cancelled", progress)
+            return
+        
         update_status(phase, message, progress, **kwargs)
         if self.callback:
             self.callback(message, progress)
+    
+    def _check_cancelled(self) -> bool:
+        """Check if refresh was cancelled. Returns True if cancelled."""
+        if is_cancel_requested():
+            self._update("CANCELLED", "Refresh cancelled by user", 0)
+            return True
+        return False
     
     def run_geospatial_extraction(self) -> bool:
         """
@@ -580,33 +594,60 @@ class RefreshPipeline:
             Dict with status and any error information
         """
         start_time = datetime.now()
-        self._update("STARTED", f"Starting data refresh for {self.start_date} to {self.end_date}...", 0)
+        self._update("STARTED", "Step 1/6: Initializing refresh pipeline...", 2)
         
         try:
-            # Step 1: GEE Extraction
+            # Check cancellation before starting
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 1: GEE Extraction (10-30%)
             if not skip_gee:
+                self._update("GEE_EXTRACTION", "Step 2/6: Extracting satellite data from Google Earth Engine...", 5)
+                if self._check_cancelled():
+                    return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
                 if not self.run_geospatial_extraction():
                     return {"success": False, "phase": "GEE_EXTRACTION", "error": get_status().get("error")}
             else:
-                self._update("GEE_SKIPPED", "Using existing GEE data", 30)
+                self._update("GEE_SKIPPED", "Step 2/6: Using existing satellite data (skipped extraction)", 30)
             
-            # Step 2: Preprocessing
+            # Check cancellation
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 2: Preprocessing (30-50%)
+            self._update("PREPROCESSING", "Step 3/6: Processing grid data and attaching barangay info...", 32)
             if not self.run_preprocessing():
                 return {"success": False, "phase": "PREPROCESSING", "error": get_status().get("error")}
             
-            # Step 3: Model Inference
+            # Check cancellation
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 3: Model Inference (50-75%)
+            self._update("INFERENCE", "Step 4/6: Running poverty prediction models (CatBoost, RF, CNN)...", 52)
             inference_success, used_inference_module = self.run_model_inference()
             if not inference_success:
                 return {"success": False, "phase": "INFERENCE", "error": get_status().get("error")}
             
-            # Step 4: Merge Outputs (skip if inference module was used - it already merged)
+            # Check cancellation
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 4: Merge Outputs (75-90%)
             if not used_inference_module:
+                self._update("MERGING", "Step 5/6: Merging model predictions and creating output files...", 78)
                 if not self.merge_and_copy_outputs():
                     return {"success": False, "phase": "MERGING", "error": get_status().get("error")}
             else:
-                print("Skipping merge step - inference module already created final output")
+                self._update("MERGING", "Step 5/6: Predictions already merged by inference module", 85)
             
-            # Step 5: Copy Supporting Files
+            # Check cancellation
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 5: Copy Supporting Files (90-98%)
+            self._update("COPYING", "Step 6/6: Finalizing and saving results to webapp...", 92)
             self.copy_supporting_files()
             
             # Done!
@@ -658,6 +699,9 @@ def run_refresh_async(
     with _refresh_lock:
         if is_refresh_running():
             return None
+        
+        # Reset cancellation flag for new refresh
+        reset_cancel_flag()
         
         def _run():
             try:

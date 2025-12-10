@@ -39,21 +39,20 @@ COPY csv_outputs/ ./csv_outputs/
 COPY googleEarthExports/ ./googleEarthExports/
 COPY output/ ./output/
 
+# Copy fallback data (committed to repo for guaranteed deployment)
+COPY data_fallback/ ./data_fallback/
+
 # Copy config files
 COPY requirements.txt ./
 
-# Create necessary directories and set permissions
-RUN mkdir -p data && chmod -R 755 data
+# Create data directory and populate with fallback data
+# This ensures the webapp works immediately on deployment
+RUN mkdir -p data && chmod -R 755 data && \
+    cp -r data_fallback/* data/ && \
+    echo "Fallback data copied to /app/data"
 
 # Copy users.db if it exists (for pre-seeded users)
 COPY users.db ./data/users.db
-
-# Copy required webapp data files to data directory
-# These are needed for the webapp to display predictions immediately
-RUN cp -r assets/shapefile data/shapefile 2>/dev/null || true && \
-    cp output/grids/grid_1km.gpkg data/grid_1km_all.gpkg 2>/dev/null || true && \
-    cp output/grid_predictions_comparison.csv data/complete_grid_predictions.csv 2>/dev/null || true && \
-    cp output/cnn_reuse_1km_2024/grid_predictions_2024_filled.csv data/all_cells_predictions_1km.csv 2>/dev/null || true
 
 # Expose port
 EXPOSE 8000

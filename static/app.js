@@ -2383,13 +2383,21 @@ function startRefreshPolling() {
       
       updateRefreshProgress(phase, message, progress);
       
-      // Check if complete or errored
+      // Check if complete, errored, or cancelled
       if (phase === 'COMPLETED') {
         stopRefreshPolling();
         showRefreshComplete(message);
       } else if (phase === 'ERROR') {
         stopRefreshPolling();
         showRefreshError(data.error || message);
+      } else if (phase === 'CANCELLED') {
+        stopRefreshPolling();
+        // Show cancelled state - handled by cancelRefresh() but also here for robustness
+        if (refreshCancelProgressBtn) refreshCancelProgressBtn.classList.add('hidden');
+        if (refreshProgressCloseBtn) {
+          refreshProgressCloseBtn.classList.remove('hidden');
+          refreshProgressCloseBtn.textContent = 'Close';
+        }
       }
       
     } catch (err) {
@@ -2413,20 +2421,22 @@ function stopRefreshPolling() {
 
 function updateRefreshProgress(phase, message, progress) {
   const phaseLabels = {
-    'STARTED': 'Initializing',
-    'STARTING': 'Initializing',
-    'GEE_EXTRACTION': 'Extracting GEE Data',
-    'GEE_EXTRACTION_DONE': 'GEE Data Complete',
-    'GEE_SKIPPED': 'Using Cached Data',
-    'PREPROCESSING': 'Preprocessing',
-    'PREPROCESSING_DONE': 'Preprocessing Complete',
-    'INFERENCE': 'Running Models',
-    'INFERENCE_DONE': 'Models Complete',
-    'MERGING': 'Merging Results',
-    'MERGING_DONE': 'Merge Complete',
-    'COPYING': 'Copying Files',
-    'COPYING_DONE': 'Files Copied',
-    'COMPLETED': 'Completed',
+    'STARTED': 'Step 1/6: Initializing',
+    'STARTING': 'Step 1/6: Initializing',
+    'GEE_EXTRACTION': 'Step 2/6: Extracting Satellite Data',
+    'GEE_EXTRACTION_DONE': 'Step 2/6: Satellite Data Complete',
+    'GEE_SKIPPED': 'Step 2/6: Using Cached Data',
+    'PREPROCESSING': 'Step 3/6: Processing Grid Data',
+    'PREPROCESSING_DONE': 'Step 3/6: Grid Processing Complete',
+    'INFERENCE': 'Step 4/6: Running Prediction Models',
+    'INFERENCE_DONE': 'Step 4/6: Predictions Complete',
+    'MERGING': 'Step 5/6: Merging Results',
+    'MERGING_DONE': 'Step 5/6: Merge Complete',
+    'COPYING': 'Step 6/6: Saving Results',
+    'COPYING_DONE': 'Step 6/6: Results Saved',
+    'COMPLETED': '✓ Refresh Complete',
+    'CANCELLING': 'Cancelling...',
+    'CANCELLED': 'Cancelled',
     'ERROR': 'Error'
   };
   
@@ -2490,29 +2500,49 @@ async function showRefreshComplete(message) {
 }
 
 async function cancelRefresh() {
+  // Immediate visual feedback
+  if (refreshCancelProgressBtn) {
+    refreshCancelProgressBtn.disabled = true;
+    refreshCancelProgressBtn.textContent = 'Cancelling...';
+    refreshCancelProgressBtn.classList.add('opacity-50');
+  }
+  updateRefreshProgress('CANCELLING', 'Cancelling refresh...', 0);
+  
   try {
     const res = await fetch('/api/refresh/cancel', { method: 'POST' });
     const data = await res.json();
     
-    if (data.success) {
-      stopRefreshPolling();
-      updateRefreshProgress('CANCELLED', 'Refresh cancelled by user', 0);
-      
-      if (refreshCancelProgressBtn) {
-        refreshCancelProgressBtn.classList.add('hidden');
-      }
-      if (refreshProgressCloseBtn) {
-        refreshProgressCloseBtn.classList.remove('hidden');
-        refreshProgressCloseBtn.textContent = 'Close';
-        refreshProgressCloseBtn.onclick = () => {
-          if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
-        };
-      }
-    } else {
-      console.error('Failed to cancel refresh:', data.error);
+    stopRefreshPolling();
+    updateRefreshProgress('CANCELLED', 'Refresh cancelled by user', 0);
+    
+    if (refreshCancelProgressBtn) {
+      refreshCancelProgressBtn.classList.add('hidden');
+      refreshCancelProgressBtn.disabled = false;
+      refreshCancelProgressBtn.textContent = 'Cancel Refresh';
+      refreshCancelProgressBtn.classList.remove('opacity-50');
+    }
+    if (refreshProgressCloseBtn) {
+      refreshProgressCloseBtn.classList.remove('hidden');
+      refreshProgressCloseBtn.textContent = 'Close';
+      refreshProgressCloseBtn.onclick = () => {
+        if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+      };
+    }
+    
+    if (!data.success) {
+      console.warn('Cancel response:', data.error);
     }
   } catch (err) {
     console.error('Error cancelling refresh:', err);
+    // Still show cancelled state on error
+    stopRefreshPolling();
+    updateRefreshProgress('CANCELLED', 'Refresh cancelled', 0);
+    if (refreshCancelProgressBtn) {
+      refreshCancelProgressBtn.classList.add('hidden');
+    }
+    if (refreshProgressCloseBtn) {
+      refreshProgressCloseBtn.classList.remove('hidden');
+    }
   }
 }
 
