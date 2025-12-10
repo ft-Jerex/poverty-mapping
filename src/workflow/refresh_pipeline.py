@@ -478,6 +478,8 @@ class RefreshPipeline:
             output_csv = self.webapp_data / "grid_predictions_comparison.csv"
             output_geojson = self.webapp_data / "grid_with_comprehensive_data.geojson"
             comprehensive_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
+            # Webapp expects this specific filename for predictions
+            webapp_predictions_csv = self.webapp_data / "gpkg_complete_predictions.csv"
             
             merge_model_predictions(
                 catboost_predictions_csv=catboost_preds or rf_preds,  # Use whichever exists
@@ -488,6 +490,11 @@ class RefreshPipeline:
                 output_geojson=output_geojson,
                 comprehensive_output_csv=comprehensive_csv,
             )
+            
+            # Copy to the filename the webapp expects
+            if output_csv.exists():
+                shutil.copy2(output_csv, webapp_predictions_csv)
+                print(f"Copied predictions to {webapp_predictions_csv}")
             
             self._update("MERGING_DONE", "Step 4/5: Predictions merged successfully", 90)
             return True
