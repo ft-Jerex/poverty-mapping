@@ -1,0 +1,9 @@
+# Nixpacks configuration for Railpack deployment
+[phases.setup]
+nixPkgs = ["gdal", "proj", "geos", "gcc"]
+
+[phases.install]
+cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+
+[start]
+cmd = "python -m src.server.app"

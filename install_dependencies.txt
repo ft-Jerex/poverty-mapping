@@ -1,1 +1,0 @@
-pip install flask pandas geopandas numpy scipy scikit-learn catboost joblib werkzeug python-dotenv rasterio shapely earthengine-api geemap matplotlib seaborn rioxarray xarray pyproj tqdm requests pytest pytest-cov torch torchvision pillow

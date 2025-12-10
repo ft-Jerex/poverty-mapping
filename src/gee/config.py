@@ -3,6 +3,9 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 import ee
+import json
+import base64
+from google.oauth2 import service_account
 
 # Base directories
 BASE_DIR = Path(__file__).parent.parent.parent
@@ -16,23 +19,46 @@ for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR]:
 
 # GEE Authentication
 def initialize_gee(service_account: Optional[str] = None, key_file: Optional[str] = None) -> None:
-    """Initialize Google Earth Engine with service account credentials.
-    
-    Args:
-        service_account: Service account email (if using service account)
-        key_file: Path to service account key file (if using service account)
+    """Initialize Google Earth Engine using env-only credentials when available.
+
+    Priority:
+      1) GEE_PRIVATE_KEY_B64 (base64 of full service account JSON)
+      2) GEE_PRIVATE_KEY_JSON (raw one-line JSON) or legacy GEE_SERVICE_ACCOUNT_JSON
+      3) Optional dev fallback: explicit service_account + key_file
+      4) ADC fallback: ee.Initialize()
     """
+    scopes = ["https://www.googleapis.com/auth/earthengine"]
     try:
+        info = None
+        b64 = os.getenv("GEE_PRIVATE_KEY_B64")
+        if b64:
+            info = json.loads(base64.b64decode(b64))
+        else:
+            js = os.getenv("GEE_PRIVATE_KEY_JSON") or os.getenv("GEE_SERVICE_ACCOUNT_JSON")
+            if js:
+                info = json.loads(js)
+
+        if info is not None:
+            creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+            project = (
+                os.getenv("EE_PROJECT_ID")
+                or os.getenv("GEE_PROJECT_ID")
+                or info.get("project_id")
+            )
+            ee.Initialize(creds, project=project)
+            print("[SUCCESS] GEE initialized successfully (env)")
+            return
+
         if service_account and key_file:
             credentials = ee.ServiceAccountCredentials(service_account, key_file)
             ee.Initialize(credentials)
-        else:
-            ee.Initialize()
-        print("[SUCCESS] GEE initialized successfully")
-    except Exception as e:
-        print("[ERROR] GEE initialization failed. Please authenticate using:")
-        print("  1. Run: earthengine authenticate")
-        print("  2. Follow the instructions to authenticate")
+            print("[SUCCESS] GEE initialized successfully (file)")
+            return
+
+        ee.Initialize()
+        print("[SUCCESS] GEE initialized successfully (ADC)")
+    except Exception:
+        print("[ERROR] GEE initialization failed. Set GEE_PRIVATE_KEY_B64 or GEE_PRIVATE_KEY_JSON in env, or use ADC/dev.")
         raise
 
 # Default parameters for data extraction

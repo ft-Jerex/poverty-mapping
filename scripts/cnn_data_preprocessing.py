@@ -23,10 +23,27 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
+
+# Load environment variables from .env files
+try:
+    from dotenv import load_dotenv
+    env_prod = Path(__file__).resolve().parent.parent / ".env.production"
+    env_file = Path(__file__).resolve().parent.parent / ".env"
+    if env_prod.exists():
+        load_dotenv(env_prod)
+        print(f"Loaded environment from {env_prod}")
+    elif env_file.exists():
+        load_dotenv(env_file)
+        print(f"Loaded environment from {env_file}")
+except ImportError:
+    pass  # dotenv not installed, rely on system environment
+
 import json
 import argparse
 import datetime as dt
-from pathlib import Path
+import base64
+import shutil
 
 import requests
 import numpy as np
@@ -38,6 +55,7 @@ import rasterio
 from rasterio.windows import Window, from_bounds
 
 from PIL import Image, ImageEnhance
+from google.oauth2 import service_account
 from skimage import feature, filters, color, exposure
 from scipy import ndimage
 from scipy.spatial import cKDTree
@@ -94,8 +112,8 @@ def parse_args() -> argparse.Namespace:
                    help="Write a simplified GEE JS export script for the given year")
     p.add_argument("--gee_asset", type=str, default="projects/ee-jerardregalado19/assets/zamboanga_city",
                    help="GEE asset path to the ROI FeatureCollection")
-    p.add_argument("--ee_key", type=str, default="env/ee-zc-povertymapping-0c4c39483d32.json",
-                   help="Service account JSON for Earth Engine authentication")
+    p.add_argument("--ee_key", type=str, default=None,
+                   help="Optional: service account JSON path. If omitted, will use env-only GEE_PRIVATE_KEY_B64 or GEE_PRIVATE_KEY_JSON.")
     p.add_argument("--force_download", action="store_true",
                    help="Re-download Sentinel-2 GeoTIFF even if already present")
     p.add_argument("--download_scale", type=int, default=10,
@@ -124,9 +142,28 @@ def ee_init_from_service_account(key_path: Path) -> None:
     ee.Initialize(credentials)
 
 
+def ee_init_from_env() -> None:
+    if ee is None:
+        raise ImportError("earthengine-api is required to download Sentinel-2 composites. Install it via pip.")
+    b64 = os.getenv("GEE_PRIVATE_KEY_B64")
+    js = os.getenv("GEE_PRIVATE_KEY_JSON") or os.getenv("GEE_SERVICE_ACCOUNT_JSON")
+    info = None
+    if b64:
+        info = json.loads(base64.b64decode(b64))
+    elif js:
+        info = json.loads(js)
+    if info is None:
+        raise RuntimeError("Missing GEE_PRIVATE_KEY_B64 or GEE_PRIVATE_KEY_JSON in environment.")
+    creds = service_account.Credentials.from_service_account_info(info, scopes=[
+        "https://www.googleapis.com/auth/earthengine",
+    ])
+    project = os.getenv("EE_PROJECT_ID") or os.getenv("GEE_PROJECT_ID") or info.get("project_id")
+    ee.Initialize(creds, project=project)
+
+
 def build_roi_geometry(shapefile_path: Path):
     gdf = gpd.read_file(shapefile_path).to_crs(epsg=4326)
-    geom = gdf.unary_union
+    geom = gdf.geometry.union_all()
     if geom.is_empty:
         raise ValueError("ROI shapefile contains no geometry.")
     return mapping(geom)
@@ -183,21 +220,125 @@ def rotate_existing_geotiff(path: Path) -> None:
     print(f"Backed up old GeoTIFF to: {backup}")
 
 
-def download_from_ee(img: ee.Image, region: dict, out_path: Path, scale: int = 10) -> None:
-    params = {
-        'region': region,
-        'scale': scale,
-        'crs': 'EPSG:4326',
-        'fileFormat': 'GEO_TIFF'
-    }
-    url = img.getDownloadURL(params)
+def download_from_ee(img: ee.Image, region: dict, out_path: Path, scale: int = 10, max_tile_size: float = 0.15) -> None:
+    """Download GEE image in tiles to avoid 50MB limit, then merge.
+    
+    Args:
+        img: Earth Engine Image to download
+        region: GeoJSON geometry dict for the region
+        out_path: Output path for the merged GeoTIFF
+        scale: Resolution in meters
+        max_tile_size: Maximum tile size in degrees (default 0.15° ≈ 16km)
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with requests.get(url, stream=True) as r:
-        r.raise_for_status()
-        with open(out_path, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=1024*1024):
-                if chunk:
-                    f.write(chunk)
+    
+    # Get bounding box from region
+    if region.get('type') == 'Polygon':
+        coords = region['coordinates'][0]
+    elif region.get('type') == 'MultiPolygon':
+        # Flatten all coordinates
+        all_coords = []
+        for poly in region['coordinates']:
+            all_coords.extend(poly[0])
+        coords = all_coords
+    else:
+        coords = region.get('coordinates', [[]])[0]
+    
+    xs = [c[0] for c in coords]
+    ys = [c[1] for c in coords]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    
+    # Calculate number of tiles needed
+    width = maxx - minx
+    height = maxy - miny
+    n_cols = max(1, int(np.ceil(width / max_tile_size)))
+    n_rows = max(1, int(np.ceil(height / max_tile_size)))
+    
+    tile_w = width / n_cols
+    tile_h = height / n_rows
+    
+    print(f"  Downloading in {n_cols}x{n_rows} = {n_cols*n_rows} tiles...")
+    
+    tile_dir = out_path.parent / "_tiles_tmp"
+    tile_dir.mkdir(parents=True, exist_ok=True)
+    tile_paths = []
+    
+    for row in range(n_rows):
+        for col in range(n_cols):
+            tile_minx = minx + col * tile_w
+            tile_maxx = minx + (col + 1) * tile_w
+            tile_miny = miny + row * tile_h
+            tile_maxy = miny + (row + 1) * tile_h
+            
+            tile_region = {
+                'type': 'Polygon',
+                'coordinates': [[
+                    [tile_minx, tile_miny],
+                    [tile_maxx, tile_miny],
+                    [tile_maxx, tile_maxy],
+                    [tile_minx, tile_maxy],
+                    [tile_minx, tile_miny]
+                ]]
+            }
+            
+            tile_path = tile_dir / f"tile_{row:02d}_{col:02d}.tif"
+            
+            if tile_path.exists():
+                tile_paths.append(tile_path)
+                print(f"  Tile {row},{col} already exists, skipping...")
+                continue
+            
+            params = {
+                'region': tile_region,
+                'scale': scale,
+                'crs': 'EPSG:4326',
+                'fileFormat': 'GEO_TIFF'
+            }
+            
+            try:
+                url = img.getDownloadURL(params)
+                with requests.get(url, stream=True, timeout=300) as r:
+                    r.raise_for_status()
+                    with open(tile_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=1024*1024):
+                            if chunk:
+                                f.write(chunk)
+                tile_paths.append(tile_path)
+                print(f"  Downloaded tile {row},{col} ({tile_path.stat().st_size/1024:.1f} KB)")
+            except Exception as e:
+                print(f"  Warning: Failed to download tile {row},{col}: {e}")
+                continue
+    
+    if not tile_paths:
+        raise RuntimeError("No tiles were downloaded successfully.")
+    
+    # Merge tiles using rasterio
+    print(f"  Merging {len(tile_paths)} tiles...")
+    from rasterio.merge import merge
+    
+    datasets = [rasterio.open(p) for p in tile_paths]
+    mosaic, out_transform = merge(datasets)
+    
+    out_meta = datasets[0].meta.copy()
+    out_meta.update({
+        "driver": "GTiff",
+        "height": mosaic.shape[1],
+        "width": mosaic.shape[2],
+        "transform": out_transform,
+        "compress": "lzw"
+    })
+    
+    for ds in datasets:
+        ds.close()
+    
+    with rasterio.open(out_path, "w", **out_meta) as dest:
+        dest.write(mosaic)
+    
+    print(f"  Merged GeoTIFF saved: {out_path} ({out_path.stat().st_size/1024/1024:.1f} MB)")
+    
+    # Cleanup tiles
+    shutil.rmtree(tile_dir, ignore_errors=True)
 
 
 def ensure_sentinel2_geo(args: argparse.Namespace, year: int) -> Path:
@@ -209,11 +350,13 @@ def ensure_sentinel2_geo(args: argparse.Namespace, year: int) -> Path:
     if not need_download:
         return target
 
-    ee_key = Path(args.ee_key)
-    if not ee_key.exists():
-        raise FileNotFoundError(f"Earth Engine key not found at {ee_key}")
-    print("Init Earth Engine from service account…")
-    ee_init_from_service_account(ee_key)
+    ee_key = Path(args.ee_key) if args.ee_key else None
+    if ee_key and ee_key.exists():
+        print("Init Earth Engine from service account file…")
+        ee_init_from_service_account(ee_key)
+    else:
+        print("Init Earth Engine from env creds…")
+        ee_init_from_env()
     print("Building ROI geometry…")
     roi = build_ee_roi(Path(args.roi_shapefile))
     print("Building Sentinel-2 composite (this can take a minute)…")
@@ -222,7 +365,7 @@ def ensure_sentinel2_geo(args: argparse.Namespace, year: int) -> Path:
         rotate_existing_geotiff(target)
     print(f"Downloading Sentinel-2 composite (scale={args.download_scale}m) via getDownloadURL…")
     download_from_ee(comp, build_roi_geometry(Path(args.roi_shapefile)), target, scale=args.download_scale)
-    print(f"Saved Sentinel-2 GeoTIFF → {target}")
+    print(f"Saved Sentinel-2 GeoTIFF -> {target}")
     return target
 
 # ============================================================================
@@ -317,7 +460,7 @@ def create_1km_grid(shapefile_path: Path, output_gpkg: Path, grid_size: int = 10
 
 
 # ============================================================================
-# SECTION 4: GEO-TIFF → CNN TILES (224×224)
+# SECTION 4: GEO-TIFF -> CNN TILES (224×224)
 # ============================================================================
 
 def extract_images_advanced(grid_gdf: gpd.GeoDataFrame, sentinel2_path: Path, output_dir: Path, img_size: int = 224) -> pd.DataFrame:
@@ -360,7 +503,7 @@ def extract_images_advanced(grid_gdf: gpd.GeoDataFrame, sentinel2_path: Path, ou
                 mean_val = float(data.mean())
 
                 if mean_val < 1:
-                    # completely dark → synthetic
+                    # completely dark -> synthetic
                     h, w, c = data.shape
                     synth = np.random.normal(20, 10, (h, w, min(3, c)))
                     synth = filters.gaussian(synth, sigma=2)
@@ -459,17 +602,26 @@ def compute_grid_s2_features(grid_gdf: gpd.GeoDataFrame, sentinel2_path: Path, o
                     rgb_n = (rgb - rgb.min())/(rgb.max() - rgb.min() + 1e-8)
                     if rgb_n.max() > 0:
                         gray = color.rgb2gray(rgb_n)
+                        
+                        # HOG + PCA (matching original training pipeline)
                         try:
-                            hog = feature.hog(gray, pixels_per_cell=(8, 8), cells_per_block=(2, 2), visualize=False)
-                            # keep up to 20 dims for reuse compatibility
-                            if len(hog) > 20:
-                                hog = hog[:20]
-                            for i, val in enumerate(hog):
-                                feats[f"hog_{i:02d}"] = float(val)
+                            hog_features = feature.hog(gray, pixels_per_cell=(8, 8), cells_per_block=(2, 2), visualize=False)
+                            if len(hog_features) > 20:
+                                from sklearn.decomposition import PCA
+                                pca = PCA(n_components=20)
+                                hog_pca = pca.fit_transform(hog_features.reshape(1, -1))[0]
+                                for i, val in enumerate(hog_pca):
+                                    feats[f"hog_pca_{i:02d}"] = float(val)
+                            else:
+                                for i, val in enumerate(hog_features[:20]):
+                                    feats[f"hog_{i:02d}"] = float(val)
                         except Exception:
                             pass
+                        
+                        # Gradient features
                         try:
-                            gx = filters.sobel_v(gray); gy = filters.sobel_h(gray)
+                            gx = filters.sobel_v(gray)
+                            gy = filters.sobel_h(gray)
                             gm = np.sqrt(gx**2 + gy**2)
                             feats["gradient_mag_mean"] = float(np.mean(gm))
                             feats["gradient_mag_std"]  = float(np.std(gm))
@@ -477,6 +629,19 @@ def compute_grid_s2_features(grid_gdf: gpd.GeoDataFrame, sentinel2_path: Path, o
                             feats["gradient_dir_std"]  = float(np.std(np.arctan2(gy, gx)))
                         except Exception:
                             pass
+                        
+                        # Gabor features (CRITICAL - was missing in refresh pipeline)
+                        try:
+                            for freq in [0.1, 0.3]:
+                                for theta in [0, np.pi / 4, np.pi / 2]:
+                                    gabor_kernel = filters.gabor_kernel(freq, theta=theta)
+                                    filtered = ndimage.convolve(gray, gabor_kernel.real, mode="wrap")
+                                    feats[f"gabor_f{int(freq * 10)}_o{int(theta * 4 / np.pi)}_mean"] = float(np.mean(filtered))
+                                    feats[f"gabor_f{int(freq * 10)}_o{int(theta * 4 / np.pi)}_std"] = float(np.std(filtered))
+                        except Exception:
+                            pass
+                        
+                        # HSV stats
                         try:
                             hsv = color.rgb2hsv(rgb_n)
                             feats["hsv_h_mean"] = float(np.mean(hsv[:, :, 0]))
@@ -502,35 +667,56 @@ def compute_grid_s2_features(grid_gdf: gpd.GeoDataFrame, sentinel2_path: Path, o
 # ============================================================================
 
 class DualStreamCNN(nn.Module):
-    """EfficientNet-B0 backbone + MLP for S2 features, fused for regression."""
+    """EfficientNet-B0 backbone + MLP for S2 features, fused for regression.
+    
+    Architecture matches the trained checkpoint:
+    - backbone: EfficientNet-B0 features (1280 dim output)
+    - img_head: Linear 1280 -> 256
+    - s2_branch: Linear s2_dim -> 128 -> 128
+    - fusion: Linear 384 -> 128 -> 1
+    """
     def __init__(self, s2_dim: int, dropout: float = 0.2):
         super().__init__()
         if _HAS_TV_WEIGHTS:
             self.backbone = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
         else:
-            # fallback for older torchvision
             try:
                 self.backbone = efficientnet_b0(pretrained=True)
             except Exception:
                 self.backbone = efficientnet_b0()
-        img_features = self.backbone.classifier[1].in_features
+        # Remove the classifier, keep only features
         self.backbone.classifier = nn.Identity()
-
-        self.s2_mlp = nn.Sequential(
-            nn.Linear(s2_dim, 256), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(256, 128), nn.ReLU(), nn.Dropout(dropout)
+        
+        # Image head: 1280 -> 256
+        self.img_head = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(1280, 256)
         )
+        
+        # S2 branch: s2_dim -> 128 -> 128
+        self.s2_branch = nn.Sequential(
+            nn.Linear(s2_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Fusion: 384 (256 + 128) -> 128 -> 1
         self.fusion = nn.Sequential(
-            nn.Linear(img_features + 128, 256), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(256, 64), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(64, 1)
+            nn.Linear(384, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1)
         )
 
     def forward(self, image, s2):
-        img_features = self.backbone(image)
-        s2_features  = self.s2_mlp(s2)
-        x = torch.cat([img_features, s2_features], dim=1)
-        out = self.fusion(x)
+        img_features = self.backbone(image)  # (B, 1280)
+        img_features = self.img_head(img_features)  # (B, 256)
+        s2_features = self.s2_branch(s2)  # (B, 128)
+        x = torch.cat([img_features, s2_features], dim=1)  # (B, 384)
+        out = self.fusion(x)  # (B, 1)
         return out, x
 
 
@@ -540,7 +726,7 @@ def load_scaler(path: Path):
 
 def load_fusion_model(model_path: Path, s2_dim: int, device: torch.device, dropout: float = 0.2) -> DualStreamCNN:
     model = DualStreamCNN(s2_dim=s2_dim, dropout=dropout)
-    ckpt = torch.load(model_path, map_location=device)
+    ckpt = torch.load(model_path, map_location=device, weights_only=False)
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state, strict=True)
     model.to(device)
@@ -553,7 +739,13 @@ def load_fusion_model(model_path: Path, s2_dim: int, device: torch.device, dropo
 # ============================================================================
 
 def align_features_to_scaler(s2_df: pd.DataFrame, scaler) -> tuple[pd.DataFrame, list[str]]:
+    """Align S2 features to match what the scaler expects.
+    
+    If scaler has feature_names_in_, use those exact features.
+    Otherwise, use the first n_features_in_ features from the dataframe.
+    """
     cols = [c for c in s2_df.columns if c != "cell_id"]
+    
     if hasattr(scaler, "feature_names_in_"):
         needed = list(scaler.feature_names_in_)
         # add missing columns with zeros
@@ -561,18 +753,36 @@ def align_features_to_scaler(s2_df: pd.DataFrame, scaler) -> tuple[pd.DataFrame,
             if c not in s2_df.columns:
                 s2_df[c] = 0.0
         return s2_df[needed].copy(), needed
+    
+    # Fallback: use first n_features_in_ features
+    n_features = getattr(scaler, "n_features_in_", len(cols))
+    if len(cols) > n_features:
+        print(f"  Note: Using first {n_features} of {len(cols)} features to match scaler")
+        cols = cols[:n_features]
+    elif len(cols) < n_features:
+        # Pad with zeros if we have fewer features
+        for i in range(len(cols), n_features):
+            col_name = f"_pad_{i}"
+            s2_df[col_name] = 0.0
+            cols.append(col_name)
+    
     return s2_df[cols].copy(), cols
 
 
 def predict_entire_roi(model: DualStreamCNN, scaler, grid_gdf: gpd.GeoDataFrame,
                        grid_images_df: pd.DataFrame, grid_s2_features_df: pd.DataFrame,
                        device: torch.device, batch_size: int = 16) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
+    # Merge to get matching cell_ids
     data = grid_images_df.merge(grid_s2_features_df, on="cell_id", how="inner")
     if len(data) == 0:
         raise ValueError("No valid cells with both images and S2 features.")
 
-    s2_scaled, feature_cols = align_features_to_scaler(data, scaler)
-    s2_scaled = scaler.transform(s2_scaled.values.astype(np.float32))
+    # Extract only S2 feature columns for scaling
+    s2_only = grid_s2_features_df[grid_s2_features_df["cell_id"].isin(data["cell_id"])].copy()
+    s2_only = s2_only.set_index("cell_id").loc[data["cell_id"]].reset_index()
+    
+    s2_aligned, feature_cols = align_features_to_scaler(s2_only, scaler)
+    s2_scaled = scaler.transform(s2_aligned.values.astype(np.float32))
 
     filepaths = data["filepath"].values
     cell_ids  = data["cell_id"].values
@@ -665,7 +875,7 @@ def main():
         gee_dir = ensure_dir(out_root / "gee")
         out_js = gee_dir / f"s2_export_{year}.js"
         write_gee_export_js(out_js, args.gee_asset, year)
-        print(f"[GEE] Wrote export script → {out_js}")
+        print(f"[GEE] Wrote export script -> {out_js}")
         print("Open https://code.earthengine.google.com/ and paste/run the script.")
 
     # Load or create grid
@@ -676,7 +886,7 @@ def main():
     else:
         print("No grid found; creating 1 km grid…")
         grid = create_1km_grid(Path(args.roi_shapefile), grid_gpkg, grid_size=1000, utm_epsg=32651)
-        print(f"Created {len(grid)} cells → {grid_gpkg}")
+        print(f"Created {len(grid)} cells -> {grid_gpkg}")
 
     print("Resolving Sentinel-2 GeoTIFF…")
     s2_tif = ensure_sentinel2_geo(args, year)
@@ -690,13 +900,13 @@ def main():
     grid_images = extract_images_advanced(grid, s2_tif, img_dir, img_size=args.img_size)
     grid_images_csv = out_root / f"grid_images_{year}.csv"
     grid_images.to_csv(grid_images_csv, index=False)
-    print(f"Saved grid image index → {grid_images_csv} | {len(grid_images)} items")
+    print(f"Saved grid image index -> {grid_images_csv} | {len(grid_images)} items")
 
     # Compute S2 engineered features
     print("Computing S2 engineered features…")
     s2_feat_csv = out_root / f"grid_s2_features_{year}.csv"
     s2_df = compute_grid_s2_features(grid, s2_tif, s2_feat_csv)
-    print(f"Saved S2 features → {s2_feat_csv} | {len(s2_df)} rows × {len([c for c in s2_df.columns if c!='cell_id'])} feats")
+    print(f"Saved S2 features -> {s2_feat_csv} | {len(s2_df)} rows × {len([c for c in s2_df.columns if c!='cell_id'])} feats")
 
     # Load scaler + model
     print("Loading scaler and model…")
@@ -719,7 +929,7 @@ def main():
     raw_gpkg = out_root / f"grid_predictions_{year}.gpkg"
     results_df.to_csv(raw_csv, index=False)
     grid_complete.to_file(raw_gpkg, driver="GPKG")
-    print(f"Saved raw predictions → {raw_csv} and {raw_gpkg}")
+    print(f"Saved raw predictions -> {raw_csv} and {raw_gpkg}")
 
     # Gap filling (IDW)
     print("Filling gaps with IDW…")
@@ -729,7 +939,7 @@ def main():
     filled_gpkg = out_root / f"grid_predictions_{year}_filled.gpkg"
     grid_filled.drop(columns="geometry").to_csv(filled_csv, index=False)
     grid_filled.to_file(filled_gpkg, driver="GPKG")
-    print(f"Saved filled predictions → {filled_csv} and {filled_gpkg}")
+    print(f"Saved filled predictions -> {filled_csv} and {filled_gpkg}")
 
     print("Done.")
 

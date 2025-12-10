@@ -1,4 +1,4 @@
-version: '3.8'
+﻿version: '3.8'
 
 services:
   poverty-mapping:
@@ -9,9 +9,7 @@ services:
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-your-secret-key-here}
       - FLASK_ENV=production
       - GEE_PROJECT_ID=${GEE_PROJECT_ID:-ee-zc-povertymapping}
-      - GEE_SERVICE_ACCOUNT_JSON=${GEE_SERVICE_ACCOUNT_JSON}
-      - GEE_CREDENTIALS_PATH=${GEE_CREDENTIALS_PATH}
-    volumes:
+      - GEE_SERVICE_ACCOUNT=${GEE_SERVICE_ACCOUNT}`r`n      - GEE_PRIVATE_KEY_B64=${GEE_PRIVATE_KEY_B64}`r`n      - GEE_PRIVATE_KEY_JSON=${GEE_PRIVATE_KEY_JSON}`r`n    volumes:
       # Mount data directories for persistence
       - ./data:/app/data
       - ./output:/app/output
@@ -37,3 +35,4 @@ services:
     depends_on:
       - poverty-mapping
     restart: unless-stopped
+

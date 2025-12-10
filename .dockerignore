@@ -24,7 +24,6 @@ docker-compose.yml
 nginx.conf
 
 # Scripts
-scripts/
 convert-gee-json.*
 
 # Temporary files
@@ -67,11 +66,7 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Large data files (keep structure but not actual data)
-googleEarthExports/*
-!googleEarthExports/.gitkeep
-csv_outputs/*
-!csv_outputs/.gitkeep
+# Temporary/unused directories
 temp_scripts/
 storage/
 catboost_info/
@@ -90,7 +85,7 @@ backups/
 *.log
 *.out
 
-# Manual scripts
-manual_merge.py
-analyze_predictions_and_next_steps.py
-investigate_cv_overfitting.py
+# Legacy root scripts (now moved to scripts/)
+# manual_merge.py - moved to scripts/
+# analyze_predictions_and_next_steps.py - moved to scripts/
+# investigate_cv_overfitting.py - moved to scripts/

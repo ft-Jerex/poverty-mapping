@@ -43,8 +43,8 @@ RF_MODEL_PATH = MODELS_DIR / "rf_disagg_model.pkl"
 CNN_MODEL_PATH = MODELS_DIR / "pytorch_fusion_cnn" / "final_fusion_model.pth"
 
 # Feature column definitions (from training output)
-CATBOOST_FEATURES_PATH = OUTPUT_DIR / "catBoost" / "geospatial_disagg" / "feature_columns.json"
-RF_FEATURES_PATH = OUTPUT_DIR / "rf" / "geospatial_disagg" / "feature_columns.json"
+CATBOOST_FEATURES_PATH = OUTPUT_DIR / "catBoost" / "constrained_disagg" / "feature_columns.json"
+RF_FEATURES_PATH = OUTPUT_DIR / "rf" / "constrained_disagg" / "feature_columns.json"
 
 # Refresh settings
 REFRESH_COOLDOWN_DAYS = 90  # Warn if refresh less than this many days ago

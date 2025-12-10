@@ -46,18 +46,15 @@ pm_webapp/
 # Local development
 .env
 .env.local
+.env.production
 
-# Data files
-# *.csv
-*.geojson
-*.gpkg
+# Runtime Generated Logs
+geospatial_prep_status.json
+preprocessing_status.json
+
+# Large binary data files (but allow in assets/)
 *.tif
 *.tiff
-*.shp
-*.shx
-*.dbf
-*.prj
-*.cpg
 
 # OS generated files
 .DS_Store
@@ -70,3 +67,4 @@ Thumbs.db
 
 # Project specific
 data/
+output/cnn_reuse_1km_2024/images
