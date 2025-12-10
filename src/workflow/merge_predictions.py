@@ -264,23 +264,54 @@ def merge_model_predictions(
     if grid_gpkg_path and Path(grid_gpkg_path).exists():
         print(f"Loading authoritative grid from: {grid_gpkg_path}")
         cnn_grid = gpd.read_file(grid_gpkg_path)
+        print(f"Grid columns: {cnn_grid.columns.tolist()}")
         
         # Convert cell_id format (cell_0000_0021 -> 0_21) to match other data
         def convert_cell_id(cell_id):
-            parts = cell_id.replace('cell_', '').split('_')
-            return str(int(parts[0])) + '_' + str(int(parts[1]))
+            try:
+                parts = str(cell_id).replace('cell_', '').split('_')
+                return str(int(parts[0])) + '_' + str(int(parts[1]))
+            except Exception:
+                return str(cell_id)
         
-        cnn_grid['grid_id'] = cnn_grid['cell_id'].apply(convert_cell_id)
-        cnn_grid['lon'] = cnn_grid['centroid_lon']
-        cnn_grid['lat'] = cnn_grid['centroid_lat']
+        # Handle different column naming conventions
+        if 'cell_id' in cnn_grid.columns:
+            cnn_grid['grid_id'] = cnn_grid['cell_id'].apply(convert_cell_id)
+        elif 'grid_id' in cnn_grid.columns:
+            pass  # Already has grid_id
+        elif 'id' in cnn_grid.columns:
+            cnn_grid['grid_id'] = cnn_grid['id'].apply(convert_cell_id)
+        else:
+            # Generate grid_id from index
+            cnn_grid['grid_id'] = cnn_grid.index.astype(str)
+            print("Warning: No cell_id column found, using index as grid_id")
+        
+        # Handle different coordinate column names
+        if 'centroid_lon' in cnn_grid.columns:
+            cnn_grid['lon'] = cnn_grid['centroid_lon']
+            cnn_grid['lat'] = cnn_grid['centroid_lat']
+        elif 'lon' not in cnn_grid.columns:
+            # Calculate centroid from geometry
+            centroids = cnn_grid.geometry.centroid.to_crs(epsg=4326)
+            cnn_grid['lon'] = centroids.x
+            cnn_grid['lat'] = centroids.y
         
         # Get geometry as GeoJSON for .geo column
-        cnn_grid_wgs84 = cnn_grid.to_crs(epsg=4326) if cnn_grid.crs != 'EPSG:4326' else cnn_grid
-        cnn_grid['.geo'] = cnn_grid_wgs84.geometry.apply(
-            lambda g: json.dumps({'type': 'Polygon', 'coordinates': [list(g.exterior.coords)]})
-        )
+        try:
+            cnn_grid_wgs84 = cnn_grid.to_crs(epsg=4326) if cnn_grid.crs and cnn_grid.crs != 'EPSG:4326' else cnn_grid
+            cnn_grid['.geo'] = cnn_grid_wgs84.geometry.apply(
+                lambda g: json.dumps({'type': 'Polygon', 'coordinates': [list(g.exterior.coords)]}) if g and hasattr(g, 'exterior') else None
+            )
+        except Exception as e:
+            print(f"Warning: Could not convert geometry to GeoJSON: {e}")
+            cnn_grid['.geo'] = None
         
-        all_grids = cnn_grid[['grid_id', 'cell_id', 'lon', 'lat', '.geo']].copy()
+        # Build output columns
+        output_cols = ['grid_id', 'lon', 'lat', '.geo']
+        if 'cell_id' in cnn_grid.columns:
+            output_cols.insert(1, 'cell_id')
+        
+        all_grids = cnn_grid[[c for c in output_cols if c in cnn_grid.columns]].copy()
         print(f"Authoritative grid has {len(all_grids)} cells")
     else:
         print(f"Warning: grid_gpkg not found at {grid_gpkg_path}, using GEE-based grid")
