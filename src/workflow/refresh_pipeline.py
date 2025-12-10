@@ -297,61 +297,50 @@ class RefreshPipeline:
     
     def run_model_inference(self) -> tuple[bool, bool]:
         """
-        Run CatBoost, RF, and CNN model inference.
+        Run CatBoost, RF, and CNN model inference as subprocess to avoid blocking.
         
         Returns:
             (success, used_inference_module): success status and whether inference.py was used
         """
         self._update("INFERENCE", "Step 3/5: Running poverty prediction models...", 55)
         
-        try:
-            from src.model.inference import run_all_models
-            
-            # Use the authoritative, latest comprehensive grid data produced by
-            # the pipeline for the webapp (data/grid_with_comprehensive_data.csv),
-            # rather than the older snapshot in assets/.
-            preprocessed_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
-            
+        # Find preprocessed data
+        preprocessed_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
+        if not preprocessed_csv.exists():
+            preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
             if not preprocessed_csv.exists():
-                # Fall back to assets version if data/ version doesn't exist yet
-                preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
-                if not preprocessed_csv.exists():
-                    self._update("ERROR", "Preprocessed data not found in data/ or assets/", 55, error="Missing input file")
-                    return False, False
-                print(f"Using fallback preprocessed data from assets/")
-            
-            # Write raw model outputs to the standard output directory; downstream
-            # merge_and_copy_outputs will consume these and create web-ready files.
-            output_dir = self.output_dir
-            
-            outputs = run_all_models(
-                preprocessed_csv=preprocessed_csv,
-                models_dir=self.models_dir,
-                output_dir=output_dir,
-                povmap_backend_dir=self.project_root,
-            )
-            
-            self._update(
-                "INFERENCE_DONE",
-                f"Model inference complete. Generated {len(outputs)} outputs.",
-                70,
-                extra={"outputs": [str(p) for p in outputs.values()]}
-            )
-            
-            # Run CNN inference if models exist
-            self.run_cnn_inference()
-            
-            # We still rely on merge_and_copy_outputs to perform the geometry-aware
-            # merge and webapp-specific file creation, so mark used_inference_module
-            # as False to ensure that step is executed.
-            return True, False
-            
-        except ImportError:
-            # Fallback: run training scripts which also save predictions
-            self._update("INFERENCE", "Step 3/5: Running CatBoost model training...", 55)
-            
-            try:
-                # Run CatBoost with low priority
+                self._update("ERROR", "Preprocessed data not found in data/ or assets/", 55, error="Missing input file")
+                return False, False
+            print(f"Using fallback preprocessed data from assets/")
+        
+        # Run inference as subprocess to avoid blocking gunicorn
+        inference_script = self.scripts_dir / "run_inference.py"
+        
+        try:
+            if inference_script.exists():
+                # Use the dedicated inference script
+                result = _run_subprocess_low_priority(
+                    [
+                        sys.executable, str(inference_script),
+                        "--preprocessed-csv", str(preprocessed_csv),
+                        "--models-dir", str(self.models_dir),
+                        "--output-dir", str(self.output_dir),
+                        "--project-root", str(self.project_root),
+                    ],
+                    cwd=self.project_root,
+                    timeout=1800  # 30 minute timeout for inference
+                )
+                
+                if result.returncode != 0:
+                    print(f"Inference stderr: {result.stderr[:1000]}")
+                    # Don't fail - try fallback scripts
+                else:
+                    print(f"Inference stdout: {result.stdout[:500]}")
+                    self._update("INFERENCE", "Step 3/5: Model inference complete, running CNN...", 68)
+            else:
+                # Fallback: run training scripts which also save predictions
+                self._update("INFERENCE", "Step 3/5: Running CatBoost model...", 55)
+                
                 catboost_script = self.scripts_dir / "train_catboost_model.py"
                 if catboost_script.exists():
                     result = _run_subprocess_low_priority(
@@ -362,9 +351,8 @@ class RefreshPipeline:
                     if result.returncode != 0:
                         print(f"CatBoost warning: {result.stderr[:500]}")
                 
-                self._update("INFERENCE", "Step 3/5: Running Random Forest model training...", 62)
+                self._update("INFERENCE", "Step 3/5: Running Random Forest model...", 62)
                 
-                # Run RF with low priority
                 rf_script = self.scripts_dir / "train_rf_model.py"
                 if rf_script.exists():
                     result = _run_subprocess_low_priority(
@@ -374,17 +362,17 @@ class RefreshPipeline:
                     )
                     if result.returncode != 0:
                         print(f"RF warning: {result.stderr[:500]}")
-                
-                # Run CNN inference
-                self._update("INFERENCE", "Running CNN inference...", 70)
-                self.run_cnn_inference()
-                
-                self._update("INFERENCE_DONE", "Model inference complete", 75)
-                return True, False  # Success + used training scripts (not inference module)
-                
-            except Exception as e:
-                self._update("ERROR", f"Inference error: {str(e)}", 60, error=str(e))
-                return False, False
+            
+            # Run CNN inference
+            self._update("INFERENCE", "Step 3/5: Running CNN inference...", 70)
+            self.run_cnn_inference()
+            
+            self._update("INFERENCE_DONE", "Model inference complete", 75)
+            return True, False
+            
+        except subprocess.TimeoutExpired:
+            self._update("ERROR", "Model inference timed out after 30 minutes", 55, error="Timeout")
+            return False, False
         except Exception as e:
             self._update("ERROR", f"Inference error: {str(e)}", 55, error=str(e))
             return False, False
