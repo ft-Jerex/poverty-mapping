@@ -52,6 +52,13 @@
     body {
       font-family: "Poppins", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
+    @media (max-width: 768px) {
+      .mobile-map-ui-panel {
+        font-size: 11px;
+        padding: 6px 10px;
+        width: 10rem;
+      }
+    }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
@@ -60,11 +67,36 @@
       <div class="flex items-center gap-2">
         <span class="text-base font-semibold tracking-wide text-slate-100">ZC Poverty Mapping</span>
       </div>
-      <div class="flex items-center gap-4 text-sm">
+      <div class="hidden md:flex items-center gap-4 text-sm">
         <a href="#hero" class="text-slate-300 hover:text-emerald-400 transition-colors">Overview</a>
         <a href="#map-section" class="text-slate-300 hover:text-emerald-400 transition-colors">Map</a>
         <a href="#about-section" class="text-slate-300 hover:text-emerald-400 transition-colors">About us</a>
         <a href="/login" class="px-3 py-1.5 rounded-full bg-emerald-500 text-slate-900 font-semibold hover:bg-emerald-400 transition-colors">Login</a>
+      </div>
+      <button
+        id="landing-mobile-nav-toggle"
+        type="button"
+        class="md:hidden inline-flex items-center justify-center rounded-md p-2 text-slate-200 hover:text-emerald-400 hover:bg-slate-900/70 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500"
+        aria-controls="landing-mobile-nav"
+        aria-expanded="false"
+      >
+        <span class="sr-only">Toggle navigation</span>
+        <svg class="h-5 w-5 text-slate-200" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 7h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          <path d="M4 12h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          <path d="M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div
+      id="landing-mobile-nav"
+      class="md:hidden border-t border-slate-800 bg-slate-950/95 hidden"
+    >
+      <div class="max-w-7xl mx-auto px-4 py-3 space-y-2 text-sm">
+        <a href="#hero" class="block text-slate-300 hover:text-emerald-400 transition-colors">Overview</a>
+        <a href="#map-section" class="block text-slate-300 hover:text-emerald-400 transition-colors">Map</a>
+        <a href="#about-section" class="block text-slate-300 hover:text-emerald-400 transition-colors">About us</a>
+        <a href="/login" class="inline-flex items-center px-3 py-1.5 rounded-full bg-emerald-500 text-slate-900 font-semibold hover:bg-emerald-400 transition-colors">Login</a>
       </div>
     </div>
   </nav>
@@ -142,8 +174,8 @@
   </header>
 
   <section id="map-section" class="flex-1 flex flex-col border-t border-slate-800 max-h-screen">
-    <main class="flex-1 flex overflow-hidden">
-      <section class="relative w-[60%] border-r border-slate-800">
+    <main class="flex-1 flex flex-col md:flex-row overflow-hidden">
+      <section class="relative w-full md:w-[60%] border-b md:border-b-0 md:border-r border-slate-800 min-h-[280px] sm:min-h-[320px] md:min-h-0">
         <div id="map" class="h-full w-full"></div>
 
         <div class="absolute top-4 left-1/2 -translate-x-1/2 z-[1000]">
@@ -165,7 +197,7 @@
         </div>
 
         <div class="absolute top-20 left-4 z-[1000]">
-          <div class="backdrop-blur bg-slate-900/70 border border-slate-700 rounded-lg shadow-lg px-4 py-3 w-52">
+          <div id="opacity-panel" class="backdrop-blur bg-slate-900/70 border border-slate-700 rounded-lg shadow-lg px-4 py-3 w-52 mobile-map-ui-panel hidden md:block">
             <label for="opacity-slider" class="text-xs font-medium text-slate-200 mb-2 block">
               Grid Opacity: <span id="opacity-value" class="text-emerald-400">80%</span>
             </label>
@@ -181,7 +213,7 @@
         </div>
 
         <div class="absolute top-44 left-4 z-[1000]">
-          <div class="backdrop-blur bg-slate-900/70 border border-slate-700 rounded-lg shadow-lg px-4 py-3 w-52 space-y-2">
+          <div id="layers-panel" class="backdrop-blur bg-slate-900/70 border border-slate-700 rounded-lg shadow-lg px-4 py-3 w-52 space-y-2 mobile-map-ui-panel hidden md:block">
             <div class="text-xs font-medium text-slate-200">Map layers</div>
             <label class="flex items-center justify-between text-xs text-slate-200">
               <span>Barangay borders</span>
@@ -209,13 +241,13 @@
         </div>
 
         <div class="absolute bottom-4 left-4 z-[1000]">
-          <div class="backdrop-blur bg-slate-900/75 border border-slate-700 rounded-lg shadow-lg px-4 py-3 w-52 text-xs text-slate-200 space-y-2">
+          <div id="legend-panel" class="backdrop-blur bg-slate-900/75 border border-slate-700 rounded-lg shadow-lg px-4 py-3 w-52 text-xs text-slate-200 space-y-2 mobile-map-ui-panel hidden md:block">
             <div class="flex justify-between items-center">
               <span class="font-semibold">Poverty legend:</span>
               <span id="legend-model-name" class="text-[10px] uppercase tracking-wide text-slate-400"> CatBoost</span>
             </div>
             <div class="flex items-center justify-between text-[11px] text-slate-400">
-              <span id="legend-mode-label">Legend mode: Fixed bands</span>
+              <span id="legend-mode-label">Legend mode: Continuous map</span>
               <button
                 id="legend-mode-toggle"
                 class="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] text-slate-100 border border-slate-700 hover:bg-slate-700 transition-colors"
@@ -244,9 +276,20 @@
             </div>
           </div>
         </div>
+
+        <div class="absolute bottom-4 right-4 z-[1000] md:hidden">
+          <button
+            id="mobile-map-ui-toggle"
+            type="button"
+            class="px-3 py-2 rounded-full bg-slate-900/80 border border-slate-700 text-[11px] text-slate-100 shadow-sm flex items-center gap-1"
+          >
+            <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+            <span>Map options</span>
+          </button>
+        </div>
       </section>
 
-      <aside class="w-[40%] bg-slate-950/60 backdrop-blur border-l border-slate-800 flex flex-col h-full">
+      <aside class="w-full md:w-[40%] bg-slate-950/60 backdrop-blur border-l border-slate-800 flex flex-col h-auto md:h-full max-h-[60vh] md:max-h-none">
         <div class="px-4 py-3 border-b border-slate-800">
           <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-300">
             Model insights

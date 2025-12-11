@@ -951,7 +951,14 @@ def _prepare_statistics() -> dict:
                 except Exception:
                     continue
 
-                if x_column not in df.columns or y_column not in df.columns:
+                # Validate that X column and all Y columns exist
+                if x_column not in df.columns:
+                    continue
+                
+                # Check if all Y columns exist (for bar charts with multiple Y-axis)
+                missing_y_cols = [col for col in y_columns if col not in df.columns]
+                if missing_y_cols:
+                    # Skip if any Y column is missing
                     continue
 
                 # Replace NaN with None for safer JSON encoding later
@@ -992,17 +999,32 @@ def _prepare_statistics() -> dict:
 
                 sheet_name = str(row.get("sheet_name") or safe_name)
 
-                custom_sheets.append(
-                    {
-                        "safe_name": safe_name,
-                        "sheet_name": sheet_name,
-                        "chart_type": chart_type,
-                        "x_labels": x_labels,
-                        "y_values": y_vals.tolist(),
-                        "x_column": x_column,
-                        "y_column": y_column,
-                    }
-                )
+                # For bar charts, also prepare data for additional Y-axis columns
+                y_values_multi = []
+                if chart_type == "bar" and len(y_columns) > 1:
+                    for y_col in y_columns:
+                        if y_col in working.columns:
+                            y_data = pd.to_numeric(working[y_col], errors="coerce").fillna(0.0).astype(float)
+                            y_values_multi.append({
+                                "column": str(y_col),
+                                "values": y_data.tolist()
+                            })
+
+                sheet_dict = {
+                    "safe_name": safe_name,
+                    "sheet_name": sheet_name,
+                    "chart_type": chart_type,
+                    "x_labels": x_labels,
+                    "y_values": y_vals.tolist(),
+                    "x_column": x_column,
+                    "y_column": y_column,
+                }
+                
+                # Add multi-Y data if available for bar charts
+                if y_values_multi:
+                    sheet_dict["y_values_multi"] = y_values_multi
+
+                custom_sheets.append(sheet_dict)
     except Exception:
         # Do not fail statistics entirely if custom sheets cannot be computed
         custom_sheets = []
