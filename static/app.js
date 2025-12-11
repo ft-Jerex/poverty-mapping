@@ -110,6 +110,7 @@ const refreshProgressBar = document.getElementById("refresh-progress-bar");
 const refreshProgressMessage = document.getElementById("refresh-progress-message");
 const refreshProgressError = document.getElementById("refresh-progress-error");
 const refreshProgressCloseBtn = document.getElementById("refresh-progress-close-btn");
+const refreshCancelProgressBtn = document.getElementById("refresh-cancel-progress-btn");
 
 const refreshWarningModal = document.getElementById("refresh-warning-modal");
 const refreshWarningText = document.getElementById("refresh-warning-text");
@@ -2344,6 +2345,8 @@ async function startRefresh(startDate, endDate, force) {
     refreshProgressModal.classList.remove('hidden');
     updateRefreshProgress('STARTING', 'Initiating refresh...', 0);
     if (refreshProgressCloseBtn) refreshProgressCloseBtn.classList.add('hidden');
+    // Show cancel button when starting
+    if (refreshCancelProgressBtn) refreshCancelProgressBtn.classList.remove('hidden');
     if (refreshProgressError) {
       refreshProgressError.textContent = '';
       refreshProgressError.classList.add('hidden');
@@ -2393,10 +2396,22 @@ function startRefreshPolling() {
     clearInterval(refreshPollingInterval);
   }
   
-  // Poll every 2 seconds
+  // Poll every 3 seconds (slower to reduce server load)
   refreshPollingInterval = setInterval(async () => {
     try {
-      const res = await fetch('/api/refresh/status');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+      
+      const res = await fetch('/api/refresh/status', { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
+      // Handle non-OK responses gracefully
+      if (!res.ok) {
+        console.warn('Refresh status returned non-OK:', res.status);
+        // Don't stop polling on timeout - server might be busy
+        return;
+      }
+      
       const data = await res.json();
       
       const phase = data.phase || 'UNKNOWN';
@@ -2405,19 +2420,33 @@ function startRefreshPolling() {
       
       updateRefreshProgress(phase, message, progress);
       
-      // Check if complete or errored
+      // Check if complete, errored, or cancelled
       if (phase === 'COMPLETED') {
         stopRefreshPolling();
         showRefreshComplete(message);
       } else if (phase === 'ERROR') {
         stopRefreshPolling();
         showRefreshError(data.error || message);
+      } else if (phase === 'CANCELLED') {
+        stopRefreshPolling();
+        // Show cancelled state - handled by cancelRefresh() but also here for robustness
+        if (refreshCancelProgressBtn) refreshCancelProgressBtn.classList.add('hidden');
+        if (refreshProgressCloseBtn) {
+          refreshProgressCloseBtn.classList.remove('hidden');
+          refreshProgressCloseBtn.textContent = 'Close';
+        }
       }
       
     } catch (err) {
-      console.error('Error polling refresh status:', err);
+      // Handle timeout/abort errors gracefully - don't spam console
+      if (err.name === 'AbortError') {
+        console.warn('Refresh status poll timed out - server may be busy');
+      } else {
+        console.error('Error polling refresh status:', err);
+      }
+      // Continue polling - don't stop on transient errors
     }
-  }, 2000);
+  }, 3000);
 }
 
 function stopRefreshPolling() {
@@ -2429,20 +2458,22 @@ function stopRefreshPolling() {
 
 function updateRefreshProgress(phase, message, progress) {
   const phaseLabels = {
-    'STARTED': 'Initializing',
-    'STARTING': 'Initializing',
-    'GEE_EXTRACTION': 'Extracting GEE Data',
-    'GEE_EXTRACTION_DONE': 'GEE Data Complete',
-    'GEE_SKIPPED': 'Using Cached Data',
-    'PREPROCESSING': 'Preprocessing',
-    'PREPROCESSING_DONE': 'Preprocessing Complete',
-    'INFERENCE': 'Running Models',
-    'INFERENCE_DONE': 'Models Complete',
-    'MERGING': 'Merging Results',
-    'MERGING_DONE': 'Merge Complete',
-    'COPYING': 'Copying Files',
-    'COPYING_DONE': 'Files Copied',
-    'COMPLETED': 'Completed',
+    'STARTED': 'Step 1/6: Initializing',
+    'STARTING': 'Step 1/6: Initializing',
+    'GEE_EXTRACTION': 'Step 2/6: Extracting Satellite Data',
+    'GEE_EXTRACTION_DONE': 'Step 2/6: Satellite Data Complete',
+    'GEE_SKIPPED': 'Step 2/6: Using Cached Data',
+    'PREPROCESSING': 'Step 3/6: Processing Grid Data',
+    'PREPROCESSING_DONE': 'Step 3/6: Grid Processing Complete',
+    'INFERENCE': 'Step 4/6: Running Prediction Models',
+    'INFERENCE_DONE': 'Step 4/6: Predictions Complete',
+    'MERGING': 'Step 5/6: Merging Results',
+    'MERGING_DONE': 'Step 5/6: Merge Complete',
+    'COPYING': 'Step 6/6: Saving Results',
+    'COPYING_DONE': 'Step 6/6: Results Saved',
+    'COMPLETED': '✓ Refresh Complete',
+    'CANCELLING': 'Cancelling...',
+    'CANCELLED': 'Cancelled',
     'ERROR': 'Error'
   };
   
@@ -2462,6 +2493,12 @@ function showRefreshError(errorMessage) {
   if (refreshProgressPhase) refreshProgressPhase.textContent = 'Error';
   if (refreshProgressBar) refreshProgressBar.classList.remove('bg-emerald-500');
   if (refreshProgressBar) refreshProgressBar.classList.add('bg-red-500');
+  
+  // Hide cancel button on error
+  if (refreshCancelProgressBtn) {
+    refreshCancelProgressBtn.classList.add('hidden');
+  }
+  
   if (refreshProgressCloseBtn) refreshProgressCloseBtn.classList.remove('hidden');
   
   if (refreshProgressCloseBtn) {
@@ -2479,6 +2516,11 @@ function showRefreshError(errorMessage) {
 async function showRefreshComplete(message) {
   updateRefreshProgress('COMPLETED', message, 100);
   
+  // Hide cancel button when complete
+  if (refreshCancelProgressBtn) {
+    refreshCancelProgressBtn.classList.add('hidden');
+  }
+  
   if (refreshProgressCloseBtn) {
     refreshProgressCloseBtn.classList.remove('hidden');
     refreshProgressCloseBtn.textContent = 'Done';
@@ -2492,6 +2534,58 @@ async function showRefreshComplete(message) {
       setStatus('Predictions refreshed successfully!');
     };
   }
+}
+
+async function cancelRefresh() {
+  // Immediate visual feedback
+  if (refreshCancelProgressBtn) {
+    refreshCancelProgressBtn.disabled = true;
+    refreshCancelProgressBtn.textContent = 'Cancelling...';
+    refreshCancelProgressBtn.classList.add('opacity-50');
+  }
+  updateRefreshProgress('CANCELLING', 'Cancelling refresh...', 0);
+  
+  try {
+    const res = await fetch('/api/refresh/cancel', { method: 'POST' });
+    const data = await res.json();
+    
+    stopRefreshPolling();
+    updateRefreshProgress('CANCELLED', 'Refresh cancelled by user', 0);
+    
+    if (refreshCancelProgressBtn) {
+      refreshCancelProgressBtn.classList.add('hidden');
+      refreshCancelProgressBtn.disabled = false;
+      refreshCancelProgressBtn.textContent = 'Cancel Refresh';
+      refreshCancelProgressBtn.classList.remove('opacity-50');
+    }
+    if (refreshProgressCloseBtn) {
+      refreshProgressCloseBtn.classList.remove('hidden');
+      refreshProgressCloseBtn.textContent = 'Close';
+      refreshProgressCloseBtn.onclick = () => {
+        if (refreshProgressModal) refreshProgressModal.classList.add('hidden');
+      };
+    }
+    
+    if (!data.success) {
+      console.warn('Cancel response:', data.error);
+    }
+  } catch (err) {
+    console.error('Error cancelling refresh:', err);
+    // Still show cancelled state on error
+    stopRefreshPolling();
+    updateRefreshProgress('CANCELLED', 'Refresh cancelled', 0);
+    if (refreshCancelProgressBtn) {
+      refreshCancelProgressBtn.classList.add('hidden');
+    }
+    if (refreshProgressCloseBtn) {
+      refreshProgressCloseBtn.classList.remove('hidden');
+    }
+  }
+}
+
+// Set up cancel button handler
+if (refreshCancelProgressBtn) {
+  refreshCancelProgressBtn.addEventListener('click', cancelRefresh);
 }
 
 // Legacy function for backward compatibility

@@ -360,63 +360,85 @@ gdf_wgs84 = gdf.to_crs("EPSG:4326")
 roi_geom = gdf_wgs84.unary_union
 
 pois_gdf_for_counts = None
+pois_simple_path = ASSETS_DIR / "POIs-simple.geojson"
 
-# Process POIs
+# Process POIs - use pre-simplified file if available to save memory
 try:
-    pois_gdf = gpd.read_file(str(pois_path))
-    if pois_gdf.crs != "EPSG:4326":
-        pois_gdf = pois_gdf.to_crs("EPSG:4326")
-    
-    pois_filtered = pois_gdf[pois_gdf.intersects(roi_geom.buffer(0.01))]
-    
-    essential_cols = ["geometry"]
-    if "amenity" in pois_filtered.columns:
-        essential_cols.append("amenity")
-    if "name" in pois_filtered.columns:
-        essential_cols.append("name")
-    
-    pois_simple = pois_filtered[essential_cols].copy()
-    pois_simple["geometry"] = pois_simple.geometry.simplify(0.0001)
-    
-    pois_simple.to_file(str(ASSETS_DIR / "POIs-simple.geojson"), driver="GeoJSON")
-    pois_gdf_for_counts = pois_simple.copy()
-    
-    print(f"OK: Processed {len(pois_simple)} POIs")
+    if pois_simple_path.exists():
+        # Use pre-existing simplified POIs to avoid reprocessing
+        pois_gdf_for_counts = gpd.read_file(str(pois_simple_path))
+        print(f"OK: Using pre-simplified POIs file ({len(pois_gdf_for_counts)} POIs)")
+    else:
+        pois_gdf = gpd.read_file(str(pois_path))
+        if pois_gdf.crs != "EPSG:4326":
+            pois_gdf = pois_gdf.to_crs("EPSG:4326")
+        
+        pois_filtered = pois_gdf[pois_gdf.intersects(roi_geom.buffer(0.01))]
+        
+        essential_cols = ["geometry"]
+        if "amenity" in pois_filtered.columns:
+            essential_cols.append("amenity")
+        if "name" in pois_filtered.columns:
+            essential_cols.append("name")
+        
+        pois_simple = pois_filtered[essential_cols].copy()
+        pois_simple["geometry"] = pois_simple.geometry.simplify(0.0001)
+        
+        pois_simple.to_file(str(pois_simple_path), driver="GeoJSON")
+        pois_gdf_for_counts = pois_simple.copy()
+        
+        print(f"OK: Processed {len(pois_simple)} POIs")
+        
+        # Free memory
+        del pois_gdf, pois_filtered, pois_simple
+        import gc
+        gc.collect()
 except Exception as e:
-    print(f"ERROR: Error processing POIs: {e}")
+    print(f"WARNING: Error processing POIs (non-fatal): {e}")
 
-# Process Roads
+# Process Roads - use pre-simplified file if available to save memory
+roads_simple_path = ASSETS_DIR / "roads-simple.geojson"
 try:
-    roads_gdf = gpd.read_file(str(roads_path))
-    if roads_gdf.crs != "EPSG:4326":
-        roads_gdf = roads_gdf.to_crs("EPSG:4326")
-    
-    roads_filtered = roads_gdf[roads_gdf.intersects(roi_geom.buffer(0.01))]
-    
-    essential_cols = ["geometry"]
-    if "highway" in roads_filtered.columns:
-        essential_cols.append("highway")
-    if "name" in roads_filtered.columns:
-        essential_cols.append("name")
-    
-    roads_simple = roads_filtered[essential_cols].copy()
-    roads_simple["geometry"] = roads_simple.geometry.simplify(0.0005)
-    
-    # Filter by highway type
-    keep_highways = [
-        "motorway", "trunk", "primary", "secondary", "tertiary",
-        "trunk_link", "primary_link", "secondary_link",
-        "residential", "service", "unclassified", "track"
-    ]
-    
-    if "highway" in roads_simple.columns:
-        roads_simple = roads_simple[roads_simple["highway"].isin(keep_highways)]
-    
-    roads_simple.to_file(str(ASSETS_DIR / "roads-simple.geojson"), driver="GeoJSON")
-    
-    print(f"OK: Processed {len(roads_simple)} roads")
+    if roads_simple_path.exists():
+        # Use pre-existing simplified roads to avoid OOM on low-memory servers
+        print(f"OK: Using pre-simplified roads file")
+    else:
+        # Only process raw roads if simplified version doesn't exist
+        roads_gdf = gpd.read_file(str(roads_path))
+        if roads_gdf.crs != "EPSG:4326":
+            roads_gdf = roads_gdf.to_crs("EPSG:4326")
+        
+        roads_filtered = roads_gdf[roads_gdf.intersects(roi_geom.buffer(0.01))]
+        
+        essential_cols = ["geometry"]
+        if "highway" in roads_filtered.columns:
+            essential_cols.append("highway")
+        if "name" in roads_filtered.columns:
+            essential_cols.append("name")
+        
+        roads_simple = roads_filtered[essential_cols].copy()
+        roads_simple["geometry"] = roads_simple.geometry.simplify(0.0005)
+        
+        # Filter by highway type
+        keep_highways = [
+            "motorway", "trunk", "primary", "secondary", "tertiary",
+            "trunk_link", "primary_link", "secondary_link",
+            "residential", "service", "unclassified", "track"
+        ]
+        
+        if "highway" in roads_simple.columns:
+            roads_simple = roads_simple[roads_simple["highway"].isin(keep_highways)]
+        
+        roads_simple.to_file(str(roads_simple_path), driver="GeoJSON")
+        
+        print(f"OK: Processed {len(roads_simple)} roads")
+        
+        # Free memory
+        del roads_gdf, roads_filtered, roads_simple
+        import gc
+        gc.collect()
 except Exception as e:
-    print(f"ERROR: Error processing roads: {e}")
+    print(f"WARNING: Error processing roads (non-fatal): {e}")
 
 # Convert to EE
 pois_ee = None

@@ -13,6 +13,8 @@ This module can be run as a background process triggered by the /api/refresh end
 from __future__ import annotations
 
 import json
+import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -23,6 +25,34 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 import time
 import tempfile
+
+
+def _run_subprocess_low_priority(cmd, cwd, timeout=1800):
+    """
+    Run a subprocess with low CPU/IO priority to prevent site lag.
+    Uses nice on Linux to reduce priority.
+    """
+    if platform.system() == "Linux":
+        # Use nice to lower CPU priority (19 = lowest)
+        # ionice -c 3 = idle IO class (only use IO when system is idle)
+        nice_cmd = ["nice", "-n", "19"] + cmd
+    else:
+        nice_cmd = cmd
+    
+    env = {**os.environ, 'PYTHONIOENCODING': 'utf-8'}
+    
+    result = subprocess.run(
+        nice_cmd,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        timeout=timeout,
+        env=env
+    )
+    return result
+
 
 # Status file for frontend polling
 STATUS_FILE = Path(__file__).parent.parent.parent / "data" / "refresh_status.json"
@@ -63,6 +93,9 @@ def update_status(
 def get_status() -> Dict[str, Any]:
     """Get current refresh status."""
     try:
+        # Ensure directory exists
+        STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
         if STATUS_FILE.exists():
             return json.loads(STATUS_FILE.read_text())
     except Exception:
@@ -76,7 +109,31 @@ def is_refresh_running() -> bool:
     if _current_refresh_thread is not None and _current_refresh_thread.is_alive():
         return True
     status = get_status()
-    return status.get("phase") not in ("IDLE", "COMPLETED", "ERROR", None)
+    return status.get("phase") not in ("IDLE", "COMPLETED", "ERROR", "CANCELLED", None)
+
+
+# Global flag to signal cancellation
+_cancel_requested = False
+
+
+def cancel_refresh() -> bool:
+    """Request cancellation of the current refresh."""
+    global _cancel_requested
+    _cancel_requested = True
+    _update_status("CANCELLED", "Refresh cancelled by user", 0)
+    return True
+
+
+def is_cancel_requested() -> bool:
+    """Check if cancellation has been requested."""
+    global _cancel_requested
+    return _cancel_requested
+
+
+def reset_cancel_flag():
+    """Reset the cancellation flag."""
+    global _cancel_requested
+    _cancel_requested = False
 
 
 class RefreshPipeline:
@@ -130,9 +187,23 @@ class RefreshPipeline:
     
     def _update(self, phase: str, message: str, progress: int, **kwargs):
         """Update status and call callback if provided."""
+        # Check if cancellation was requested
+        if is_cancel_requested() and phase not in ("CANCELLED", "ERROR", "COMPLETED"):
+            update_status("CANCELLED", "Refresh cancelled by user", progress)
+            if self.callback:
+                self.callback("Cancelled", progress)
+            return
+        
         update_status(phase, message, progress, **kwargs)
         if self.callback:
             self.callback(message, progress)
+    
+    def _check_cancelled(self) -> bool:
+        """Check if refresh was cancelled. Returns True if cancelled."""
+        if is_cancel_requested():
+            self._update("CANCELLED", "Refresh cancelled by user", 0)
+            return True
+        return False
     
     def run_geospatial_extraction(self) -> bool:
         """
@@ -166,16 +237,12 @@ class RefreshPipeline:
             temp_script.write_text(modified_content, encoding='utf-8')
             
             try:
-                # Run the modified script with UTF-8 encoding to handle emoji characters
-                result = subprocess.run(
+                # Run the modified script with low priority to prevent site lag
+                self._update("GEE_EXTRACTION", "Step 1/5: Connecting to Google Earth Engine...", 5)
+                result = _run_subprocess_low_priority(
                     [sys.executable, "-X", "utf8", str(temp_script)],
-                    cwd=str(self.project_root),
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=1800,  # 30 minute timeout
-                    env={**__import__('os').environ, 'PYTHONIOENCODING': 'utf-8'}
+                    cwd=self.project_root,
+                    timeout=1800  # 30 minute timeout
                 )
                 
                 if result.returncode != 0:
@@ -201,7 +268,6 @@ class RefreshPipeline:
         except Exception as e:
             self._update("ERROR", f"GEE extraction error: {str(e)}", 10, error=str(e))
             return False
-            return False
     
     def run_preprocessing(self) -> bool:
         """
@@ -209,7 +275,7 @@ class RefreshPipeline:
         
         This calls preprocess_grid_data.py to attach barangay info.
         """
-        self._update("PREPROCESSING", "Preprocessing grid data...", 35)
+        self._update("PREPROCESSING", "Step 2/5: Processing grid data and attaching barangay info...", 35)
         
         script_path = self.scripts_dir / "preprocess_grid_data.py"
         
@@ -218,12 +284,10 @@ class RefreshPipeline:
             return False
         
         try:
-            result = subprocess.run(
+            result = _run_subprocess_low_priority(
                 [sys.executable, str(script_path)],
-                cwd=str(self.project_root),
-                capture_output=True,
-                text=True,
-                timeout=600,  # 10 minute timeout
+                cwd=self.project_root,
+                timeout=600  # 10 minute timeout
             )
             
             if result.returncode != 0:
@@ -235,7 +299,7 @@ class RefreshPipeline:
                 )
                 return False
             
-            self._update("PREPROCESSING_DONE", "Grid preprocessing complete", 50)
+            self._update("PREPROCESSING_DONE", "Step 2/5: Grid preprocessing complete", 50)
             return True
             
         except subprocess.TimeoutExpired:
@@ -247,94 +311,82 @@ class RefreshPipeline:
     
     def run_model_inference(self) -> tuple[bool, bool]:
         """
-        Run CatBoost, RF, and CNN model inference.
+        Run CatBoost, RF, and CNN model inference as subprocess to avoid blocking.
         
         Returns:
             (success, used_inference_module): success status and whether inference.py was used
         """
-        self._update("INFERENCE", "Running model inference...", 55)
+        self._update("INFERENCE", "Step 3/5: Running poverty prediction models...", 55)
+        
+        # Find preprocessed data
+        preprocessed_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
+        if not preprocessed_csv.exists():
+            preprocessed_csv = self.assets_dir / "grid_with_comprehensive_data.csv"
+            if not preprocessed_csv.exists():
+                self._update("ERROR", "Preprocessed data not found in data/ or assets/", 55, error="Missing input file")
+                return False, False
+            print(f"Using fallback preprocessed data from assets/")
+        
+        # Run inference as subprocess to avoid blocking gunicorn
+        inference_script = self.scripts_dir / "run_inference.py"
         
         try:
-            from src.model.inference import run_all_models
-            
-            # Use the authoritative, latest comprehensive grid data produced by
-            # the pipeline for the webapp (data/grid_with_comprehensive_data.csv),
-            # rather than the older snapshot in assets/.
-            preprocessed_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
-            
-            if not preprocessed_csv.exists():
-                self._update("ERROR", "Preprocessed data not found", 55, error="Missing input file")
-                return False, False
-            
-            # Write raw model outputs to the standard output directory; downstream
-            # merge_and_copy_outputs will consume these and create web-ready files.
-            output_dir = self.output_dir
-            
-            outputs = run_all_models(
-                preprocessed_csv=preprocessed_csv,
-                models_dir=self.models_dir,
-                output_dir=output_dir,
-                povmap_backend_dir=self.project_root,
-            )
-            
-            self._update(
-                "INFERENCE_DONE",
-                f"Model inference complete. Generated {len(outputs)} outputs.",
-                70,
-                extra={"outputs": [str(p) for p in outputs.values()]}
-            )
-            
-            # Run CNN inference if models exist
-            self.run_cnn_inference()
-            
-            # We still rely on merge_and_copy_outputs to perform the geometry-aware
-            # merge and webapp-specific file creation, so mark used_inference_module
-            # as False to ensure that step is executed.
-            return True, False
-            
-        except ImportError:
-            # Fallback: run training scripts which also save predictions
-            self._update("INFERENCE", "Running CatBoost training/inference...", 55)
-            
-            try:
-                # Run CatBoost
+            if inference_script.exists():
+                # Use the dedicated inference script
+                result = _run_subprocess_low_priority(
+                    [
+                        sys.executable, str(inference_script),
+                        "--preprocessed-csv", str(preprocessed_csv),
+                        "--models-dir", str(self.models_dir),
+                        "--output-dir", str(self.output_dir),
+                        "--project-root", str(self.project_root),
+                    ],
+                    cwd=self.project_root,
+                    timeout=1800  # 30 minute timeout for inference
+                )
+                
+                if result.returncode != 0:
+                    print(f"Inference stderr: {result.stderr[:1000]}")
+                    # Don't fail - try fallback scripts
+                else:
+                    print(f"Inference stdout: {result.stdout[:500]}")
+                    self._update("INFERENCE", "Step 3/5: Model inference complete, running CNN...", 68)
+            else:
+                # Fallback: run training scripts which also save predictions
+                self._update("INFERENCE", "Step 3/5: Running CatBoost model...", 55)
+                
                 catboost_script = self.scripts_dir / "train_catboost_model.py"
                 if catboost_script.exists():
-                    result = subprocess.run(
+                    result = _run_subprocess_low_priority(
                         [sys.executable, str(catboost_script)],
-                        cwd=str(self.project_root),
-                        capture_output=True,
-                        text=True,
-                        timeout=1200,
+                        cwd=self.project_root,
+                        timeout=1200
                     )
                     if result.returncode != 0:
                         print(f"CatBoost warning: {result.stderr[:500]}")
                 
-                self._update("INFERENCE", "Running RF training/inference...", 65)
+                self._update("INFERENCE", "Step 3/5: Running Random Forest model...", 62)
                 
-                # Run RF
                 rf_script = self.scripts_dir / "train_rf_model.py"
                 if rf_script.exists():
-                    result = subprocess.run(
+                    result = _run_subprocess_low_priority(
                         [sys.executable, str(rf_script)],
-                        cwd=str(self.project_root),
-                        capture_output=True,
-                        text=True,
-                        timeout=1200,
+                        cwd=self.project_root,
+                        timeout=1200
                     )
                     if result.returncode != 0:
                         print(f"RF warning: {result.stderr[:500]}")
-                
-                # Run CNN inference
-                self._update("INFERENCE", "Running CNN inference...", 70)
-                self.run_cnn_inference()
-                
-                self._update("INFERENCE_DONE", "Model inference complete", 75)
-                return True, False  # Success + used training scripts (not inference module)
-                
-            except Exception as e:
-                self._update("ERROR", f"Inference error: {str(e)}", 60, error=str(e))
-                return False, False
+            
+            # Run CNN inference
+            self._update("INFERENCE", "Step 3/5: Running CNN inference...", 70)
+            self.run_cnn_inference()
+            
+            self._update("INFERENCE_DONE", "Model inference complete", 75)
+            return True, False
+            
+        except subprocess.TimeoutExpired:
+            self._update("ERROR", "Model inference timed out after 30 minutes", 55, error="Timeout")
+            return False, False
         except Exception as e:
             self._update("ERROR", f"Inference error: {str(e)}", 55, error=str(e))
             return False, False
@@ -375,12 +427,10 @@ class RefreshPipeline:
             if sentinel2_tif.exists():
                 cmd.extend(["--sentinel2_tif", str(sentinel2_tif)])
             
-            result = subprocess.run(
+            result = _run_subprocess_low_priority(
                 cmd,
-                cwd=str(self.project_root),
-                capture_output=True,
-                text=True,
-                timeout=3600,  # 1 hour timeout
+                cwd=self.project_root,
+                timeout=3600  # 1 hour timeout
             )
             
             if result.returncode != 0:
@@ -415,7 +465,7 @@ class RefreshPipeline:
         """
         Merge predictions and copy to webapp data directory.
         """
-        self._update("MERGING", "Merging predictions...", 80)
+        self._update("MERGING", "Step 4/5: Merging predictions and generating outputs...", 80)
         
         try:
             from src.workflow.merge_predictions import merge_model_predictions
@@ -437,15 +487,24 @@ class RefreshPipeline:
             
             # Check if prediction files exist
             if not catboost_preds.exists():
-                self._update("WARNING", "CatBoost predictions not found, skipping merge", 80)
+                self._update("WARNING", "CatBoost predictions not found at expected path", 80)
+                print(f"Expected CatBoost predictions at: {catboost_preds}")
                 catboost_preds = None
             if not rf_preds.exists():
-                self._update("WARNING", "RF predictions not found, skipping merge", 80)
+                self._update("WARNING", "RF predictions not found at expected path", 80)
+                print(f"Expected RF predictions at: {rf_preds}")
                 rf_preds = None
             
             if catboost_preds is None and rf_preds is None:
                 self._update("ERROR", "No prediction files found to merge", 80, error="Missing predictions")
                 return False
+            
+            # IMPORTANT: Do NOT use same file for both models - this causes identical predictions bug
+            # If one is missing, pass None and let merge handle it properly
+            if catboost_preds is None:
+                print("WARNING: CatBoost predictions missing - RF predictions will be used alone")
+            if rf_preds is None:
+                print("WARNING: RF predictions missing - CatBoost predictions will be used alone")
             
             if not raw_gee_export.exists():
                 # Fallback: continue merge without .geo; frontend will still show predictions
@@ -454,10 +513,12 @@ class RefreshPipeline:
             output_csv = self.webapp_data / "grid_predictions_comparison.csv"
             output_geojson = self.webapp_data / "grid_with_comprehensive_data.geojson"
             comprehensive_csv = self.webapp_data / "grid_with_comprehensive_data.csv"
+            # Webapp expects this specific filename for predictions
+            webapp_predictions_csv = self.webapp_data / "gpkg_complete_predictions.csv"
             
             merge_model_predictions(
-                catboost_predictions_csv=catboost_preds or rf_preds,  # Use whichever exists
-                rf_predictions_csv=rf_preds or catboost_preds,
+                catboost_predictions_csv=catboost_preds,  # Pass None if missing, don't substitute
+                rf_predictions_csv=rf_preds,  # Pass None if missing, don't substitute
                 grid_data_csv=grid_data,
                 raw_gee_export_csv=raw_gee_export,
                 output_csv=output_csv,
@@ -465,7 +526,12 @@ class RefreshPipeline:
                 comprehensive_output_csv=comprehensive_csv,
             )
             
-            self._update("MERGING_DONE", "Predictions merged and copied", 90)
+            # Copy to the filename the webapp expects
+            if output_csv.exists():
+                shutil.copy2(output_csv, webapp_predictions_csv)
+                print(f"Copied predictions to {webapp_predictions_csv}")
+            
+            self._update("MERGING_DONE", "Step 4/5: Predictions merged successfully", 90)
             return True
             
         except Exception as e:
@@ -477,28 +543,52 @@ class RefreshPipeline:
         """
         Copy supporting files (grid gpkg, shapefiles) to webapp data directory.
         """
-        self._update("COPYING", "Copying supporting files...", 92)
+        self._update("COPYING", "Step 5/5: Finalizing and saving results...", 92)
         
         try:
-            # Copy grid gpkg if exists
-            grid_gpkg_src = self.output_dir / "grids" / "grid_1km.gpkg"
+            # Ensure webapp data directory exists
+            self.webapp_data.mkdir(parents=True, exist_ok=True)
+            
+            # Copy grid gpkg - check multiple sources
             grid_gpkg_dst = self.webapp_data / "grid_1km_all.gpkg"
+            grid_gpkg_sources = [
+                self.output_dir / "grids" / "grid_1km.gpkg",
+                self.assets_dir / "shapefile" / "grid_cells.gpkg",
+                self.project_root / "data" / "grid_1km_all.gpkg",
+            ]
             
-            if grid_gpkg_src.exists():
-                shutil.copy2(grid_gpkg_src, grid_gpkg_dst)
+            if not grid_gpkg_dst.exists():
+                for src in grid_gpkg_sources:
+                    if src.exists():
+                        shutil.copy2(src, grid_gpkg_dst)
+                        print(f"Copied grid GPKG from {src}")
+                        break
             
-            # Copy shapefile directory if not already present
+            # Copy shapefile directory
             shapefile_src = self.assets_dir / "shapefile"
             shapefile_dst = self.webapp_data / "shapefile"
             
             if shapefile_src.exists() and not shapefile_dst.exists():
                 shutil.copytree(shapefile_src, shapefile_dst)
+                print(f"Copied shapefile directory to {shapefile_dst}")
+            
+            # Ensure all expected prediction filenames exist
+            # The webapp expects: complete_grid_predictions.csv
+            predictions_src = self.webapp_data / "grid_predictions_comparison.csv"
+            if predictions_src.exists():
+                # Copy to all expected filenames
+                for dst_name in ["complete_grid_predictions.csv", "gpkg_complete_predictions.csv"]:
+                    dst = self.webapp_data / dst_name
+                    if not dst.exists():
+                        shutil.copy2(predictions_src, dst)
+                        print(f"Copied predictions to {dst}")
             
             self._update("COPYING_DONE", "Supporting files copied", 95)
             return True
             
         except Exception as e:
             self._update("WARNING", f"Copy warning: {str(e)}", 92)
+            print(f"Copy supporting files error: {e}")
             # Non-fatal error
             return True
     
@@ -513,40 +603,70 @@ class RefreshPipeline:
             Dict with status and any error information
         """
         start_time = datetime.now()
-        self._update("STARTED", f"Starting data refresh for {self.start_date} to {self.end_date}...", 0)
+        self._update("STARTED", "Step 1/6: Initializing refresh pipeline...", 2)
         
         try:
-            # Step 1: GEE Extraction
+            # Check cancellation before starting
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 1: GEE Extraction (10-30%)
             if not skip_gee:
+                self._update("GEE_EXTRACTION", "Step 2/6: Extracting satellite data from Google Earth Engine...", 5)
+                if self._check_cancelled():
+                    return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
                 if not self.run_geospatial_extraction():
                     return {"success": False, "phase": "GEE_EXTRACTION", "error": get_status().get("error")}
             else:
-                self._update("GEE_SKIPPED", "Using existing GEE data", 30)
+                self._update("GEE_SKIPPED", "Step 2/6: Using existing satellite data (skipped extraction)", 30)
             
-            # Step 2: Preprocessing
+            # Check cancellation
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 2: Preprocessing (30-50%)
+            self._update("PREPROCESSING", "Step 3/6: Processing grid data and attaching barangay info...", 32)
             if not self.run_preprocessing():
                 return {"success": False, "phase": "PREPROCESSING", "error": get_status().get("error")}
             
-            # Step 3: Model Inference
+            # Check cancellation
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 3: Model Inference (50-75%)
+            self._update("INFERENCE", "Step 4/6: Running poverty prediction models (CatBoost, RF, CNN)...", 52)
             inference_success, used_inference_module = self.run_model_inference()
             if not inference_success:
                 return {"success": False, "phase": "INFERENCE", "error": get_status().get("error")}
             
-            # Step 4: Merge Outputs (skip if inference module was used - it already merged)
+            # Check cancellation
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 4: Merge Outputs (75-90%)
             if not used_inference_module:
+                self._update("MERGING", "Step 5/6: Merging model predictions and creating output files...", 78)
                 if not self.merge_and_copy_outputs():
                     return {"success": False, "phase": "MERGING", "error": get_status().get("error")}
             else:
-                print("Skipping merge step - inference module already created final output")
+                self._update("MERGING", "Step 5/6: Predictions already merged by inference module", 85)
             
-            # Step 5: Copy Supporting Files
+            # Check cancellation
+            if self._check_cancelled():
+                return {"success": False, "phase": "CANCELLED", "error": "Cancelled by user"}
+            
+            # Step 5: Copy Supporting Files (90-98%)
+            self._update("COPYING", "Step 6/6: Finalizing and saving results to webapp...", 92)
             self.copy_supporting_files()
             
             # Done!
             elapsed = (datetime.now() - start_time).total_seconds()
+            minutes = int(elapsed // 60)
+            seconds = int(elapsed % 60)
+            time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
             self._update(
                 "COMPLETED",
-                f"Refresh completed successfully in {elapsed:.1f} seconds",
+                f"✓ Refresh complete! All predictions updated. (Time: {time_str})",
                 100,
                 extra={"elapsed_seconds": elapsed}
             )
@@ -588,6 +708,9 @@ def run_refresh_async(
     with _refresh_lock:
         if is_refresh_running():
             return None
+        
+        # Reset cancellation flag for new refresh
+        reset_cancel_flag()
         
         def _run():
             try:

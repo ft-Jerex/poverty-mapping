@@ -65,6 +65,10 @@ preprocessing_status.json
 ehthumbs.db
 Thumbs.db
 
-# Project specific
+# Project specific - runtime data (generated during refresh)
 data/
 output/cnn_reuse_1km_2024/images
+
+# Keep fallback data for initial deployment
+!data_fallback/
+!data_fallback/**

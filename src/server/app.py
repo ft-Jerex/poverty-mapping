@@ -64,6 +64,43 @@ app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-change-me")
 
 
+def _resolve_csv_path(csv_rel: str) -> Path | None:
+    """Resolve a CSV path from sheets_saved_summary.csv to an actual file path.
+    
+    Handles:
+    - Windows backslashes in paths
+    - Paths like 'csv_outputs/filename.csv'
+    - Fallback to .clean.csv versions
+    """
+    if not csv_rel:
+        return None
+    
+    # Normalize path separators
+    csv_rel = csv_rel.replace("\\", "/")
+    
+    # Try the full relative path from ROOT
+    csv_path = ROOT / csv_rel
+    if csv_path.exists():
+        return csv_path
+    
+    # Extract just the filename
+    csv_filename = Path(csv_rel).name
+    
+    # Try in CSV_DIR
+    alt = CSV_DIR / csv_filename
+    if alt.exists():
+        return alt
+    
+    # Try .clean.csv version
+    if csv_filename.endswith(".csv") and not csv_filename.endswith(".clean.csv"):
+        clean_name = csv_filename.replace(".csv", ".clean.csv")
+        clean_path = CSV_DIR / clean_name
+        if clean_path.exists():
+            return clean_path
+    
+    return None
+
+
 # Global error handler to log all exceptions
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -249,8 +286,10 @@ def auth_login() -> object:
 
 @app.route("/logout")
 def logout() -> object:  # pragma: no cover
-    session.pop("username", None)
-    return redirect(url_for("landing"))
+    session.clear()  # Clear entire session
+    response = redirect(url_for("landing"))
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 
 @app.route("/api/me")
@@ -632,15 +671,9 @@ def _load_sheet_dataframe_from_summary(name_hint: str) -> pd.DataFrame | None:
 
     row = summary.loc[mask].iloc[0]
     csv_rel = str(row.get("csv_path") or "").strip()
-    if not csv_rel:
-        return None
-
-    csv_path = ROOT / csv_rel
-    if not csv_path.exists():
-        alt = CSV_DIR / csv_rel
-        csv_path = alt if alt.exists() else csv_path
-
-    if not csv_path.exists():
+    csv_path = _resolve_csv_path(csv_rel)
+    
+    if csv_path is None:
         return None
 
     try:
@@ -936,14 +969,8 @@ def _prepare_statistics() -> dict:
                     continue
                 row = summary.loc[row_mask].iloc[0]
                 csv_rel = str(row.get("csv_path") or "").strip()
-                if not csv_rel:
-                    continue
-
-                csv_path = ROOT / csv_rel
-                if not csv_path.exists():
-                    alt = CSV_DIR / csv_rel
-                    csv_path = alt if alt.exists() else csv_path
-                if not csv_path.exists():
+                csv_path = _resolve_csv_path(csv_rel)
+                if csv_path is None:
                     continue
 
                 try:
@@ -1384,14 +1411,8 @@ def api_statistics_for_barangay(name: str) -> object:
 
                 row = summary.loc[row_mask].iloc[0]
                 csv_rel = str(row.get("csv_path") or "").strip()
-                if not csv_rel:
-                    continue
-
-                csv_path = ROOT / csv_rel
-                if not csv_path.exists():
-                    alt = CSV_DIR / csv_rel
-                    csv_path = alt if alt.exists() else csv_path
-                if not csv_path.exists():
+                csv_path = _resolve_csv_path(csv_rel)
+                if csv_path is None:
                     continue
 
                 try:
@@ -1462,16 +1483,9 @@ def api_sheets_get(safe_name: str) -> object:
 
     row_dict = row.iloc[0].to_dict()
     csv_rel = str(row_dict.get("csv_path") or "").strip()
-    if not csv_rel:
-        return jsonify({"success": False, "error": "Sheet has no csv_path"}), 400
-
-    csv_path = ROOT / csv_rel
-    if not csv_path.exists():
-        # Also try resolving relative to CSV_DIR for robustness
-        alt = CSV_DIR / csv_rel
-        csv_path = alt if alt.exists() else csv_path
-
-    if not csv_path.exists():
+    csv_path = _resolve_csv_path(csv_rel)
+    
+    if csv_path is None:
         return jsonify({"success": False, "error": "CSV file not found"}), 404
 
     try:
@@ -1642,13 +1656,14 @@ def api_sheets_update(safe_name: str) -> object:
 
     row = df_summary.loc[mask].iloc[0]
     csv_rel = str(row.get("csv_path") or "").strip()
-    if not csv_rel:
-        return jsonify({"success": False, "error": "Sheet has no csv_path"}), 400
-
-    csv_path = ROOT / csv_rel
-    if not csv_path.exists():
-        alt = CSV_DIR / csv_rel
-        csv_path = alt if alt.exists() else csv_path
+    
+    # For writing, resolve existing path or create new one
+    csv_path = _resolve_csv_path(csv_rel)
+    if csv_path is None:
+        # Create new file in CSV_DIR
+        csv_rel_normalized = csv_rel.replace("\\", "/")
+        csv_filename = Path(csv_rel_normalized).name
+        csv_path = CSV_DIR / csv_filename
 
     try:
         df = pd.DataFrame(rows, columns=header)
@@ -1679,15 +1694,7 @@ def api_sheets_delete(safe_name: str) -> object:
 
     row = df_summary.loc[mask].iloc[0]
     csv_rel = str(row.get("csv_path") or "").strip()
-    csv_path = None
-    if csv_rel:
-        candidate = ROOT / csv_rel
-        if candidate.exists():
-            csv_path = candidate
-        else:
-            alt = CSV_DIR / csv_rel
-            if alt.exists():
-                csv_path = alt
+    csv_path = _resolve_csv_path(csv_rel)
 
     if csv_path is not None and csv_path.exists():
         try:
@@ -2184,13 +2191,34 @@ def api_refresh_status() -> object:
         status["is_running"] = is_refresh_running()
         
         return jsonify({"success": True, **status})
-    except ImportError:
+    except Exception:
+        # Always return valid JSON even on error
         return jsonify({
             "success": True,
             "phase": "IDLE",
-            "message": "Refresh module not loaded",
+            "message": "No refresh in progress",
+            "progress": 0,
             "is_running": False
         })
+
+
+@app.route("/api/refresh/cancel", methods=["POST"])
+def api_refresh_cancel() -> object:
+    """Cancel an ongoing refresh."""
+    user = _get_current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    
+    try:
+        from src.workflow.refresh_pipeline import cancel_refresh, is_refresh_running
+        
+        if not is_refresh_running():
+            return jsonify({"success": False, "error": "No refresh in progress"})
+        
+        cancel_refresh()
+        return jsonify({"success": True, "message": "Refresh cancelled"})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @app.route("/api/refresh/history", methods=["GET"])
