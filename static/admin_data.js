@@ -23,6 +23,8 @@
   const chartTypeSelect = document.getElementById("chart-type-select");
   const chartXSelect = document.getElementById("chart-x-select");
   const chartYSelect = document.getElementById("chart-y-select");
+  const chartYSelect2 = document.getElementById("chart-y-select-2");
+  const chartYSelect3 = document.getElementById("chart-y-select-3");
   const chartSortSelect = document.getElementById("chart-sort-select");
   const chartRowFilterMode = document.getElementById("chart-row-filter-mode");
   const chartBarangayFilter = document.getElementById("chart-barangay-filter");
@@ -339,6 +341,8 @@
   function refreshChartSelectors() {
     chartXSelect.innerHTML = '<option value="">X axis column…</option>';
     chartYSelect.innerHTML = "";
+    if (chartYSelect2) chartYSelect2.innerHTML = '<option value="">Y axis 2 (optional)…</option>';
+    if (chartYSelect3) chartYSelect3.innerHTML = '<option value="">Y axis 3 (optional)…</option>';
 
     if (chartSortSelect) {
       chartSortSelect.innerHTML = '<option value="">Sort by…</option>';
@@ -359,6 +363,20 @@
       optY.value = col;
       optY.textContent = col;
       chartYSelect.appendChild(optY);
+
+      if (chartYSelect2) {
+        const optY2 = document.createElement("option");
+        optY2.value = col;
+        optY2.textContent = col;
+        chartYSelect2.appendChild(optY2);
+      }
+
+      if (chartYSelect3) {
+        const optY3 = document.createElement("option");
+        optY3.value = col;
+        optY3.textContent = col;
+        chartYSelect3.appendChild(optY3);
+      }
 
       if (chartSortSelect) {
         const optS = document.createElement("option");
@@ -398,6 +416,7 @@
       renderSheetsList();
       renderTable();
       refreshChartSelectors();
+      updateYAxisVisibility();
       setButtonsEnabled(true);
       chartStatusEl.textContent = "Select X axis and one or more numeric columns, then Update chart.";
 
@@ -418,6 +437,14 @@
             const first = cfg.y_columns[0];
             if (first) {
               chartYSelect.value = first;
+            }
+            const second = cfg.y_columns[1];
+            if (second && chartYSelect2) {
+              chartYSelect2.value = second;
+            }
+            const third = cfg.y_columns[2];
+            if (third && chartYSelect3) {
+              chartYSelect3.value = third;
             }
           }
           if (chartRowFilterMode && cfg.row_mode) {
@@ -624,9 +651,20 @@
     }
 
     const xCol = chartXSelect.value;
-    const yVal = chartYSelect.value;
-    const ySelected = yVal ? [yVal] : [];
     const type = chartTypeSelect.value || "bar";
+    
+    // Collect Y-axis selections based on chart type
+    let ySelected = [];
+    if (type === "bar") {
+      // For bar charts, allow up to 3 Y-axis columns
+      if (chartYSelect.value) ySelected.push(chartYSelect.value);
+      if (chartYSelect2 && chartYSelect2.value) ySelected.push(chartYSelect2.value);
+      if (chartYSelect3 && chartYSelect3.value) ySelected.push(chartYSelect3.value);
+    } else {
+      // For other chart types, use only the first Y-axis
+      const yVal = chartYSelect.value;
+      ySelected = yVal ? [yVal] : [];
+    }
 
     if (!xCol || !ySelected.length) {
       chartStatusEl.textContent = "Select an X axis column and at least one Y column.";
@@ -1013,6 +1051,16 @@
     }
   }
 
+  function updateYAxisVisibility() {
+    const type = chartTypeSelect.value || "bar";
+    if (chartYSelect2) {
+      chartYSelect2.classList.toggle("hidden", type !== "bar");
+    }
+    if (chartYSelect3) {
+      chartYSelect3.classList.toggle("hidden", type !== "bar");
+    }
+  }
+
   function initEvents() {
     if (addColumnBtn) {
       addColumnBtn.addEventListener("click", addColumn);
@@ -1023,6 +1071,13 @@
     updateChartBtn.addEventListener("click", () => {
       updateChart();
     });
+
+    if (chartTypeSelect) {
+      chartTypeSelect.addEventListener("change", () => {
+        updateYAxisVisibility();
+        updateChart();
+      });
+    }
 
     if (uploadSheetBtn && uploadSheetInput) {
       uploadSheetBtn.addEventListener("click", openUploadSheetDialog);

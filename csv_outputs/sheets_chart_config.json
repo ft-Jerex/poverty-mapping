@@ -1,27 +1,31 @@
 {
   "Number of Poor Households": {
-    "chart_type": "line",
+    "chart_type": "bar",
     "x_column": "Barangays",
     "y_columns": [
+      "Identified Poor Households",
       "Total Assessed Households"
     ],
     "row_mode": "top5",
-    "expose_in_statistics": false
+    "expose_in_statistics": true
   },
   "Nature of Employment": {
     "chart_type": "bar",
     "x_column": "Barangay",
     "y_columns": [
-      "Permanent"
+      "Seasonal/ Short Term",
+      "Permanent",
+      "Weekly Basis"
     ],
     "row_mode": "top5",
-    "expose_in_statistics": false
+    "expose_in_statistics": true
   },
   "Number of Poor Individuals": {
-    "chart_type": "pie",
+    "chart_type": "bar",
     "x_column": "Barangays",
     "y_columns": [
-      "Identified Poor Individuals"
+      "Identified Poor Individuals",
+      "Total Assessed Individuals"
     ],
     "row_mode": "top5",
     "expose_in_statistics": true

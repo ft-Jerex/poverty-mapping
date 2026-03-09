@@ -67,6 +67,12 @@ const statsCustomContainer = document.getElementById("stats-custom-sheets");
 const barangayFactorsTogglesContainer = document.getElementById("barangay-factors-toggles");
 const statsBarangaySummaryEl = document.getElementById("stats-barangay-summary");
 const statsBarangaySheetsContainer = document.getElementById("stats-barangay-sheets");
+const mobileMapUiToggle = document.getElementById("mobile-map-ui-toggle");
+const layersPanelEl = document.getElementById("layers-panel");
+const legendPanelEl = document.getElementById("legend-panel");
+const opacityPanelEl = document.getElementById("opacity-panel");
+const landingMobileNavToggle = document.getElementById("landing-mobile-nav-toggle");
+const landingMobileNav = document.getElementById("landing-mobile-nav");
 
 const createUserBtn = document.getElementById("create-user-btn");
 const logoutBtn = document.getElementById("logout-btn");
@@ -196,13 +202,13 @@ function updateLegend(modelKey) {
   const legendBlocks = legendContainer.querySelectorAll(".flex.items-center.gap-2");
   if (legendBlocks.length !== 4) return;
 
-  // Fixed-band labels (0–30, 30–50, 50–60, >60)
+  // Fixed-band labels (0–25, 25–40, 40–60, 60%+)
   if (legendMode === "fixed") {
     const labels = [
-      "Low (0–30%)",
-      "Lower-middle (30–50%)",
-      "Upper-middle (50–60%)",
-      "High (>60%)",
+      "Low (0–25%)",
+      "Lower-middle (25–40%)",
+      "Upper-middle (40–60%)",
+      "High (60%+)",
     ];
     for (let i = 0; i < 4; ++i) {
       const labelSpan = legendBlocks[i].querySelector("span:nth-child(2)");
@@ -258,24 +264,36 @@ function getQuartileColor(label) {
   }
 }
 
+function getHeatmapColorFromPct(povertyPct) {
+  const val = Number(povertyPct);
+  if (!Number.isFinite(val)) return "#64748b";
+  const clamped = Math.min(100, Math.max(0, val));
+
+  // Discrete bands for continuous mode: 0–25, 25–40, 40–60, 60%+
+  if (clamped < 25) return "#22c55e";   // Low (0–25%)
+  if (clamped < 40) return "#eab308";   // Lower-middle (25–40%)
+  if (clamped < 60) return "#f97316";   // Upper-middle (40–60%)
+  return "#ef4444";                     // High (60%+)
+}
+
 function getFixedBandLabel(povertyPct) {
   const val = Number(povertyPct);
   if (!Number.isFinite(val)) return null;
-  if (val <= 30) return "Low (0–30%)";
-  if (val <= 50) return "Lower-middle (30–50%)";
-  if (val <= 60) return "Upper-middle (50–60%)";
-  return "High (>60%)";
+  if (val < 25) return "Low (0–25%)";
+  if (val < 40) return "Lower-middle (25–40%)";
+  if (val < 60) return "Upper-middle (40–60%)";
+  return "High (60%+)";
 }
 
 function getFixedBandColor(label) {
   switch (label) {
-    case "Low (0–30%)":
+    case "Low (0–25%)":
       return "#22c55e";
-    case "Lower-middle (30–50%)":
+    case "Lower-middle (25–40%)":
       return "#eab308";
-    case "Upper-middle (50–60%)":
+    case "Upper-middle (40–60%)":
       return "#f97316";
-    case "High (>60%)":
+    case "High (60%+)":
       return "#ef4444";
     default:
       return "#64748b";
@@ -705,17 +723,18 @@ function createModelLayer(modelKey, geojson) {
     style: function (feature) {
       let color;
       if (legendMode === "fixed") {
-        const bandLabel = getFixedBandLabel(feature.properties?.poverty_pct);
-        color = getFixedBandColor(bandLabel);
+        const pct = feature.properties?.poverty_pct;
+        color = getHeatmapColorFromPct(pct);
       } else {
         const qField = getQuartileField(modelKey);
         const label = feature.properties?.[qField];
         color = getQuartileColor(label);
       }
+      const isFixed = legendMode === "fixed";
       return {
-        color: "#020617",
-        weight: 0.2,
-        opacity: 0.4,
+        color: isFixed ? "transparent" : "#020617",
+        weight: isFixed ? 0 : 0.2,
+        opacity: isFixed ? 0 : 0.4,
         fillColor: color,
         fillOpacity: currentOpacity,
       };
@@ -1605,7 +1624,6 @@ function renderStatisticsCharts(stats) {
         if (typeof Chart === "undefined") return;
 
         const labels = Array.isArray(cfg.x_labels) ? cfg.x_labels : [];
-        const values = Array.isArray(cfg.y_values) ? cfg.y_values : [];
         const type = (cfg.chart_type || "bar").toLowerCase();
 
         const palette = [
@@ -1618,7 +1636,37 @@ function renderStatisticsCharts(stats) {
           "#6366f1",
           "#ec4899",
         ];
-        const colors = labels.map((_, i) => palette[i % palette.length]);
+
+        // Handle multiple Y-axis columns for bar charts
+        let datasets = [];
+        if (type === "bar" && Array.isArray(cfg.y_values_multi) && cfg.y_values_multi.length > 0) {
+          // Multiple Y-axis columns
+          cfg.y_values_multi.forEach((yData, idx) => {
+            const values = Array.isArray(yData.values) ? yData.values : [];
+            datasets.push({
+              label: yData.column || `Series ${idx + 1}`,
+              data: values,
+              backgroundColor: palette[idx % palette.length],
+              borderColor: palette[idx % palette.length],
+              borderWidth: 0,
+              borderRadius: 4,
+            });
+          });
+        } else {
+          // Single Y-axis column (backward compatibility)
+          const values = Array.isArray(cfg.y_values) ? cfg.y_values : [];
+          const colors = labels.map((_, i) => palette[i % palette.length]);
+          datasets = [
+            {
+              label: cfg.y_column || "Value",
+              data: values,
+              backgroundColor: type === "pie" ? colors : colors,
+              borderColor: type === "pie" ? colors : colors,
+              borderWidth: type === "line" ? 2 : 0,
+              tension: 0.25,
+            },
+          ];
+        }
 
         const ctx = canvas.getContext("2d");
         statsCustomCharts.push(
@@ -1626,16 +1674,7 @@ function renderStatisticsCharts(stats) {
             type: type === "pie" ? "pie" : type,
             data: {
               labels,
-              datasets: [
-                {
-                  label: cfg.y_column || "Value",
-                  data: values,
-                  backgroundColor: type === "pie" ? colors : colors,
-                  borderColor: type === "pie" ? colors : colors,
-                  borderWidth: type === "line" ? 2 : 0,
-                  tension: 0.25,
-                },
-              ],
+              datasets,
             },
             options: {
               responsive: true,
@@ -1809,10 +1848,10 @@ function renderStatisticsCharts(stats) {
 
 }
 
-  async function downloadMapImage() {
-    if (!downloadMapBtn) {
-      return;
-    }
+async function downloadMapImage() {
+  if (!downloadMapBtn) {
+    return;
+  }
 
   try {
     downloadMapBtn.disabled = true;
@@ -1853,7 +1892,7 @@ function renderStatisticsCharts(stats) {
       stopButtonSpinner(downloadMapBtn);
     }
   }
-  }
+}
 
 // Helper to ensure required client-side libs are present (html2canvas, JSZip, FileSaver, jsPDF)
 async function ensureDownloadLibs() {
@@ -2136,8 +2175,6 @@ async function buildComprehensiveDownload() {
   saveAs(blob, filename);
   setStatus("Download ready.");
 }
-
- 
 
 // ============================================================================
 // REFRESH WORKFLOW
@@ -2900,6 +2937,88 @@ async function fetchPeopleMessages() {
   }
 }
 
+function isMobileViewport() {
+  return window.innerWidth < 768;
+}
+
+function setMobileMapUiVisible(visible) {
+  const targets = [layersPanelEl, legendPanelEl, opacityPanelEl];
+  targets.forEach((el) => {
+    if (!el) return;
+    if (visible) {
+      el.classList.remove("hidden");
+    } else if (isMobileViewport()) {
+      el.classList.add("hidden");
+    }
+  });
+  if (mobileMapUiToggle) {
+    mobileMapUiToggle.setAttribute("aria-pressed", visible ? "true" : "false");
+  }
+}
+
+function setupMobileMapUiToggle() {
+  if (!mobileMapUiToggle || (!layersPanelEl && !legendPanelEl)) return;
+
+  let isOpen = false;
+
+  const apply = () => {
+    if (isMobileViewport()) {
+      setMobileMapUiVisible(isOpen);
+    } else {
+      setMobileMapUiVisible(true);
+    }
+  };
+
+  mobileMapUiToggle.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!isMobileViewport()) return;
+    isOpen = !isOpen;
+    apply();
+  });
+
+  window.addEventListener("resize", () => {
+    if (!isMobileViewport()) {
+      isOpen = true;
+    } else {
+      isOpen = false;
+    }
+    apply();
+  });
+
+  if (isMobileViewport()) {
+    isOpen = false;
+  } else {
+    isOpen = true;
+  }
+  apply();
+}
+
+function setupLandingMobileNav() {
+  if (!landingMobileNavToggle || !landingMobileNav) return;
+
+  landingMobileNavToggle.addEventListener("click", (e) => {
+    e.preventDefault();
+    const isOpen = !landingMobileNav.classList.contains("hidden");
+    if (isOpen) {
+      landingMobileNav.classList.add("hidden");
+      landingMobileNavToggle.setAttribute("aria-expanded", "false");
+    } else {
+      landingMobileNav.classList.remove("hidden");
+      landingMobileNavToggle.setAttribute("aria-expanded", "true");
+    }
+  });
+
+  const anchorLinks = landingMobileNav.querySelectorAll("a[href^='#']");
+  anchorLinks.forEach((link) => {
+    link.addEventListener("click", () => {
+      if (!landingMobileNav.classList.contains("hidden")) {
+        landingMobileNav.classList.add("hidden");
+        landingMobileNavToggle.setAttribute("aria-expanded", "false");
+      }
+    });
+  });
+}
+
 function rebuildModelLayersForLegendMode() {
   // Recreate CatBoost / RF / CNN layers so colors follow the current legend mode
   Object.entries(modelGeojson).forEach(([key, geo]) => {
@@ -2921,11 +3040,11 @@ function setupLegendModeToggle() {
 
   const applyUi = () => {
     if (legendMode === "fixed") {
-      legendModeLabelEl.textContent = "Legend mode: Fixed bands";
+      legendModeLabelEl.textContent = "Legend mode: Continuous map";
       legendModeToggleBtn.textContent = "Switch to quartiles";
     } else {
       legendModeLabelEl.textContent = "Legend mode: Quartiles";
-      legendModeToggleBtn.textContent = "Switch to fixed bands";
+      legendModeToggleBtn.textContent = "Switch to continuous map";
     }
   };
 
@@ -2946,13 +3065,15 @@ setupTabs();
 setupAdminControls();
 setupLandingPageNavigation();
 setupLandingPageAnimations();
+setupLandingMobileNav();
 setupResetViewControl();
+setupMobileMapUiToggle();
 setupFeedbackForm();
 setupLegendModeToggle();
 loadPredictions();
 
 // Load statistics for the Statistics tab
-(async function loadStatistics() {
+async function loadStatistics() {
   try {
     const res = await fetch("/api/statistics");
     if (!res.ok) {
@@ -2963,7 +3084,17 @@ loadPredictions();
   } catch (e) {
     console.error("Failed to load statistics", e);
   }
-}());
+}
+
+// Load statistics on page load
+loadStatistics();
+
+// Reload statistics when page becomes visible (e.g., after returning from admin data sheet)
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    loadStatistics();
+  }
+});
 
 if (censusToggle) {
   censusToggle.addEventListener("change", (e) => {
