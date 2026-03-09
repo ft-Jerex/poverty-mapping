@@ -62,11 +62,11 @@ ENV FLASK_ENV=production
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# Health check
+# Health check using PORT env variable (defaults to 8000)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
 # Run the application with gunicorn (production WSGI server)
 # Use 2 workers and 4 threads per worker for better concurrency
 # Timeout of 120s to handle long-running status checks during refresh
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "120", "src.server.app:app"]
+CMD gunicorn --bind 0.0.0.0:${PORT:-8000} --workers 2 --threads 4 --timeout 120 src.server.app:app
