@@ -10,6 +10,7 @@ from sklearn.preprocessing import RobustScaler
 from sklearn.model_selection import GroupKFold
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.ensemble import RandomForestRegressor
+from scipy.stats import spearmanr, pearsonr
 import joblib
 import json
 
@@ -22,18 +23,22 @@ ASSETS_DIR = PROJECT_ROOT / 'assets'
 DATA_DIR = PROJECT_ROOT / 'data'
 CSV_PATH = ASSETS_DIR / 'grid_with_comprehensive_data.csv'
 OUTPUT_DIR = DATA_DIR / 'rf' / 'geospatial_disagg'
+DHS_MATCHED_CSV = DATA_DIR / 'dhs_grid_matched.csv'
 NB_RADII_M = [500, 1000, 2000]
 USE_LOGIT_TARGET = False
 USE_POPULATION_FOR_SCALING = True
+ENABLE_COORD_TREND_FEATURES = False
 N_FOLDS = 5
 RANDOM_SEED = 42
 
 RF_PARAMS = {
-    'n_estimators': 300,
-    'max_depth': 6,
+    'n_estimators': 500,
+    'max_depth': None,
+    'max_features': 'sqrt',
+    'bootstrap': True,
     'random_state': RANDOM_SEED,
     'n_jobs': -1,
-    'min_samples_leaf': 1,
+    'min_samples_leaf': 5,
 }
 
 IGNORED_COLS = set([
@@ -46,7 +51,7 @@ IGNORED_COLS = set([
 GEOSPATIAL_ONLY = [
     'elevation', 'modis_ndvi', 'ndbi', 'ndvi', 'nighttime_lights',
     'poi_accessibility', 'population', 'precipitation', 'road_accessibility', 'sentinel2_composite',
-    'slope', 'surface_temp', 'x_idx_y', 'y_idx_y', 'cluster', 'is_protected_forest', 'is_island',
+    'slope', 'surface_temp', 'is_protected_forest', 'is_island',
     'NIR_glcm_contrast', 'NIR_glcm_dissimilarity', 'NIR_glcm_homogeneity', 'NIR_glcm_energy',
     'NIR_glcm_correlation', 'NIR_glcm_asm', 'Red_glcm_contrast', 'Red_glcm_dissimilarity',
     'Red_glcm_homogeneity', 'Red_glcm_energy', 'Red_glcm_correlation', 'Red_glcm_asm',
@@ -182,7 +187,10 @@ def add_simple_interactions(X, max_pairs=8):
 def prepare_engineered_X(df, base_features, radii_m):
     df_imp = spatial_knn_impute_features(df, base_features)
     df_ms, ms_cols = add_multiscale_aggregates(df_imp, base_features, radii_m)
-    df_trend, trend_cols = add_spatial_trend_features(df_ms)
+    if ENABLE_COORD_TREND_FEATURES:
+        df_trend, trend_cols = add_spatial_trend_features(df_ms)
+    else:
+        df_trend, trend_cols = df_ms.copy(), []
     fe = [f for f in base_features if f in df_trend.columns] + ms_cols + trend_cols
     for f in fe:
         df_trend[f] = pd.to_numeric(df_trend[f], errors='coerce')
@@ -264,6 +272,96 @@ def scale_predictions_to_barangay(df_samples, pred_col='pred_raw', barangay_col=
 
     df['pred_scaled'] = df[grid_cell_col].map(scaled_preds)
     return df['pred_scaled'].values, grid_agg
+
+# -------------------------
+# DHS EXTERNAL VALIDATION
+# -------------------------
+def run_dhs_external_validation(model, X_all, df_all, feature_cols, output_dir,
+                                dhs_csv=DHS_MATCHED_CSV):
+    """
+    Validate model predictions against DHS 2022 cluster-level wealth scores.
+
+    For each matched DHS cluster, look up the nearest grid cell's feature vector,
+    predict poverty, and correlate with the DHS mean wealth factor score (hv271).
+    Higher wealth score → lower poverty, so we expect negative Spearman/Pearson ρ.
+    """
+    outp = Path(output_dir)
+    if not dhs_csv.exists():
+        print(f"\n[DHS] Matched DHS file not found at {dhs_csv}. "
+              "Run scripts/prepare_dhs_validation.py first. Skipping.")
+        return None
+
+    dhs = pd.read_csv(dhs_csv)
+    if len(dhs) == 0:
+        print("[DHS] No matched DHS clusters. Skipping external validation.")
+        return None
+
+    print(f"\n=== DHS EXTERNAL VALIDATION ===")
+    print(f"Matched DHS clusters: {len(dhs)}")
+
+    # Build a grid_id → row-index lookup from the training dataframe
+    grid_id_to_idx = {}
+    for i, gid in enumerate(df_all['grid_cell_id'].values):
+        if gid not in grid_id_to_idx:
+            grid_id_to_idx[gid] = i
+
+    # For each DHS cluster, find the feature row of its nearest grid cell
+    matched_rows = []
+    for _, row in dhs.iterrows():
+        gid = row['nearest_grid_id']
+        if gid in grid_id_to_idx:
+            matched_rows.append({
+                'cluster_id': int(row['cluster_id']),
+                'dhs_wealth_score': row['mean_wealth_score'],
+                'match_distance_m': row['match_distance_m'],
+                'match_confidence': row['match_confidence'],
+                'urban_rural': row['urban_rural'],
+                'adm1_name': row['adm1_name'],
+                'feature_idx': grid_id_to_idx[gid],
+            })
+
+    if len(matched_rows) == 0:
+        print("[DHS] No DHS clusters could be mapped to training grid cells. Skipping.")
+        return None
+
+    matched_df = pd.DataFrame(matched_rows)
+    feature_indices = matched_df['feature_idx'].values
+
+    # Predict at those grid cells
+    X_dhs = X_all.iloc[feature_indices].reset_index(drop=True)
+    preds = model.predict(X_dhs)
+    matched_df['predicted_poverty'] = preds
+
+    # Compute correlations (expect negative: high wealth ↔ low poverty)
+    spearman_rho, spearman_p = spearmanr(matched_df['predicted_poverty'],
+                                          matched_df['dhs_wealth_score'])
+    pearson_r, pearson_p = pearsonr(matched_df['predicted_poverty'],
+                                     matched_df['dhs_wealth_score'])
+
+    print(f"  Clusters used: {len(matched_df)}")
+    print(f"  Spearman ρ:  {spearman_rho:+.4f}  (p={spearman_p:.4f})")
+    print(f"  Pearson  r:  {pearson_r:+.4f}  (p={pearson_p:.4f})")
+
+    # Also compute for high-confidence matches only
+    hc = matched_df[matched_df['match_confidence'] == 'high']
+    if len(hc) >= 5:
+        sp_hc, sp_hc_p = spearmanr(hc['predicted_poverty'], hc['dhs_wealth_score'])
+        pr_hc, pr_hc_p = pearsonr(hc['predicted_poverty'], hc['dhs_wealth_score'])
+        print(f"  [High-conf only, n={len(hc)}]  Spearman ρ: {sp_hc:+.4f} (p={sp_hc_p:.4f}), "
+              f"Pearson r: {pr_hc:+.4f} (p={pr_hc_p:.4f})")
+
+    # Save detailed results
+    matched_df.to_csv(outp / 'dhs_external_validation.csv', index=False)
+    print(f"  Saved to: {outp / 'dhs_external_validation.csv'}")
+
+    summary = {
+        'n_clusters': len(matched_df),
+        'spearman_rho': float(spearman_rho),
+        'spearman_p': float(spearman_p),
+        'pearson_r': float(pearson_r),
+        'pearson_p': float(pearson_p),
+    }
+    return summary
 
 # -------------------------
 # MAIN PIPELINE
@@ -461,6 +559,23 @@ def disaggregate_pipeline(csv_path=CSV_PATH, output_dir=OUTPUT_DIR):
     print(f"\nSaved sample-level predictions to: {outp/'sample_predictions.csv'}")
     grid_agg.to_csv(outp/'grid_predictions.csv', index=False)
     print(f"Saved grid-level predictions to: {outp/'grid_predictions.csv'}")
+
+    # ----------------- DHS External Validation -----------------
+    dhs_summary = run_dhs_external_validation(
+        model=final_model,
+        X_all=X_final,
+        df_all=df_with_ms,
+        feature_cols=feature_cols,
+        output_dir=outp,
+    )
+    if dhs_summary:
+        print(f"\n=== COMBINED SUMMARY ===")
+        print(f"Internal CV — Sample R²: {sample_r2_cv:.4f}, Grid R²: {grid_r2_cv:.4f}")
+        print(f"DHS External — Spearman ρ: {dhs_summary['spearman_rho']:+.4f} "
+              f"(p={dhs_summary['spearman_p']:.4f}), "
+              f"Pearson r: {dhs_summary['pearson_r']:+.4f} "
+              f"(p={dhs_summary['pearson_p']:.4f}), "
+              f"n={dhs_summary['n_clusters']}")
 
 
 if __name__ == "__main__":

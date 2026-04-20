@@ -118,9 +118,11 @@ _cancel_requested = False
 
 def cancel_refresh() -> bool:
     """Request cancellation of the current refresh."""
-    global _cancel_requested
+    global _cancel_requested, _current_refresh_thread
     _cancel_requested = True
-    _update_status("CANCELLED", "Refresh cancelled by user", 0)
+    update_status("CANCELLED", "Refresh cancelled by user", 0)
+    # Clear the thread reference so is_refresh_running() returns False
+    _current_refresh_thread = None
     return True
 
 
@@ -329,6 +331,8 @@ class RefreshPipeline:
         
         # Run inference as subprocess to avoid blocking gunicorn
         inference_script = self.scripts_dir / "run_inference.py"
+        used_inference_module = False
+        ran_model_prediction = False
         
         try:
             if inference_script.exists():
@@ -347,11 +351,18 @@ class RefreshPipeline:
                 
                 if result.returncode != 0:
                     print(f"Inference stderr: {result.stderr[:1000]}")
-                    # Don't fail - try fallback scripts
+                    self._update(
+                        "INFERENCE",
+                        "Dedicated inference failed, falling back to model scripts...",
+                        58,
+                    )
                 else:
                     print(f"Inference stdout: {result.stdout[:500]}")
+                    used_inference_module = True
+                    ran_model_prediction = True
                     self._update("INFERENCE", "Step 3/5: Model inference complete, running CNN...", 68)
-            else:
+
+            if not ran_model_prediction:
                 # Fallback: run training scripts which also save predictions
                 self._update("INFERENCE", "Step 3/5: Running CatBoost model...", 55)
                 
@@ -364,6 +375,8 @@ class RefreshPipeline:
                     )
                     if result.returncode != 0:
                         print(f"CatBoost warning: {result.stderr[:500]}")
+                    else:
+                        ran_model_prediction = True
                 
                 self._update("INFERENCE", "Step 3/5: Running Random Forest model...", 62)
                 
@@ -376,13 +389,24 @@ class RefreshPipeline:
                     )
                     if result.returncode != 0:
                         print(f"RF warning: {result.stderr[:500]}")
+                    else:
+                        ran_model_prediction = True
+
+            if not ran_model_prediction:
+                self._update(
+                    "ERROR",
+                    "Model inference failed: no prediction script completed successfully",
+                    55,
+                    error="Inference subprocess failed and no fallback model succeeded",
+                )
+                return False, used_inference_module
             
             # Run CNN inference
             self._update("INFERENCE", "Step 3/5: Running CNN inference...", 70)
             self.run_cnn_inference()
             
             self._update("INFERENCE_DONE", "Model inference complete", 75)
-            return True, False
+            return True, used_inference_module
             
         except subprocess.TimeoutExpired:
             self._update("ERROR", "Model inference timed out after 30 minutes", 55, error="Timeout")
@@ -572,16 +596,14 @@ class RefreshPipeline:
                 shutil.copytree(shapefile_src, shapefile_dst)
                 print(f"Copied shapefile directory to {shapefile_dst}")
             
-            # Ensure all expected prediction filenames exist
-            # The webapp expects: complete_grid_predictions.csv
+            # Always overwrite prediction files so the webapp uses
+            # the freshest merged predictions (not stale legacy copies).
             predictions_src = self.webapp_data / "grid_predictions_comparison.csv"
             if predictions_src.exists():
-                # Copy to all expected filenames
                 for dst_name in ["complete_grid_predictions.csv", "gpkg_complete_predictions.csv"]:
                     dst = self.webapp_data / dst_name
-                    if not dst.exists():
-                        shutil.copy2(predictions_src, dst)
-                        print(f"Copied predictions to {dst}")
+                    shutil.copy2(predictions_src, dst)
+                    print(f"Copied predictions to {dst}")
             
             self._update("COPYING_DONE", "Supporting files copied", 95)
             return True
@@ -713,6 +735,7 @@ def run_refresh_async(
         reset_cancel_flag()
         
         def _run():
+            global _current_refresh_thread
             try:
                 pipeline = RefreshPipeline(
                     project_root=Path(project_root),
@@ -722,6 +745,9 @@ def run_refresh_async(
                 pipeline.run_full_refresh(skip_gee=skip_gee)
             except Exception as e:
                 update_status("ERROR", f"Refresh failed: {str(e)}", error=str(e))
+            finally:
+                # Always clear thread reference when done
+                _current_refresh_thread = None
         
         thread = threading.Thread(target=_run, daemon=True)
         _current_refresh_thread = thread

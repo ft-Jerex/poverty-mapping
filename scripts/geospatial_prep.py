@@ -254,7 +254,8 @@ ndbi = s2_composite.normalizedDifference(["B11", "B8"]).rename("ndbi")
 print("Calculating GLCM texture features from NIR and Red bands...")
 
 # NIR band (B8) GLCM
-nir_band = s2_composite.select('B8').multiply(255).toUint8()
+# Sentinel-2 SR values are 0-10000, normalize to 0-255 for GLCM
+nir_band = s2_composite.select('B8').divide(10000).multiply(255).clamp(0, 255).toUint8()
 nir_glcm = nir_band.glcmTexture(size=3)
 
 NIR_glcm_contrast = nir_glcm.select('B8_contrast').rename('NIR_glcm_contrast')
@@ -265,7 +266,8 @@ NIR_glcm_correlation = nir_glcm.select('B8_corr').rename('NIR_glcm_correlation')
 NIR_glcm_asm = nir_glcm.select('B8_asm').rename('NIR_glcm_asm')
 
 # Red band (B4) GLCM
-red_band = s2_composite.select('B4').multiply(255).toUint8()
+# Sentinel-2 SR values are 0-10000, normalize to 0-255 for GLCM
+red_band = s2_composite.select('B4').divide(10000).multiply(255).clamp(0, 255).toUint8()
 red_glcm = red_band.glcmTexture(size=3)
 
 Red_glcm_contrast = red_glcm.select('B4_contrast').rename('Red_glcm_contrast')

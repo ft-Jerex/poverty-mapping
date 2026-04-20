@@ -1068,6 +1068,90 @@ def get_statistics() -> dict:
     return _prepare_statistics()
 
 
+def _smooth_boundary_predictions(
+    merged: gpd.GeoDataFrame,
+    pred_cols: list[str],
+    blend: float = 0.3,
+) -> gpd.GeoDataFrame:
+    """Reduce prediction discontinuities at barangay boundaries.
+
+    Grid cells that straddle multiple barangay polygons (border cells) tend to
+    have predictions biased by cross-boundary spatial feature aggregation.
+    This function blends each border cell's prediction toward the mean of its
+    4-connected grid neighbours, producing smoother transitions at boundaries
+    while preserving the overall prediction distribution.
+
+    Args:
+        merged: GeoDataFrame with ``grid_id`` and prediction columns.
+        pred_cols: Prediction column names to smooth (e.g. pred_scaled_catboost).
+        blend: Fraction of the neighbour mean to mix in for border cells
+               (0 = no change, 1 = fully replace with neighbour mean).
+    """
+    import numpy as np
+
+    # Parse grid indices from grid_id (format "x_y")
+    def _parse(gid: str):
+        parts = str(gid).split("_")
+        return int(parts[0]), int(parts[1])
+
+    merged = merged.copy()
+    merged[["_xi", "_yi"]] = pd.DataFrame(
+        merged["grid_id"].apply(_parse).tolist(), index=merged.index
+    )
+
+    # Identify border cells by checking if a cell's 4-connected neighbours
+    # belong to a different barangay.
+    brgy_col = "barangay_name_clean"
+    if brgy_col not in merged.columns:
+        return merged
+
+    cell_brgy = dict(zip(zip(merged["_xi"], merged["_yi"]), merged[brgy_col]))
+
+    def _is_border(row) -> bool:
+        x, y = int(row["_xi"]), int(row["_yi"])
+        brgy = row[brgy_col]
+        if pd.isna(brgy):
+            return False
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nb_brgy = cell_brgy.get((x + dx, y + dy))
+            if nb_brgy is not None and not pd.isna(nb_brgy) and nb_brgy != brgy:
+                return True
+        return False
+
+    border_mask = merged.apply(_is_border, axis=1)
+    n_border = border_mask.sum()
+    if n_border == 0:
+        merged.drop(columns=["_xi", "_yi"], inplace=True)
+        return merged
+
+    # Build a lookup for fast neighbour value retrieval
+    for col in pred_cols:
+        if col not in merged.columns:
+            continue
+        val_lookup: dict[tuple[int, int], float] = dict(
+            zip(zip(merged["_xi"], merged["_yi"]), merged[col])
+        )
+
+        smoothed = merged[col].copy()
+        for idx in merged.index[border_mask]:
+            x, y = int(merged.at[idx, "_xi"]), int(merged.at[idx, "_yi"])
+            neighbours = []
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nv = val_lookup.get((x + dx, y + dy))
+                if nv is not None and np.isfinite(nv):
+                    neighbours.append(nv)
+            if neighbours:
+                nb_mean = float(np.mean(neighbours))
+                orig = float(merged.at[idx, col])
+                smoothed.at[idx] = orig * (1 - blend) + nb_mean * blend
+
+        merged[col] = smoothed
+
+    merged.drop(columns=["_xi", "_yi"], inplace=True)
+    print(f"[boundary smoothing] blended {n_border} border cells (blend={blend})")
+    return merged
+
+
 def _load_grid_predictions() -> tuple[dict, dict, dict]:
     """Load real per-cell predictions and build GeoJSON for CatBoost/RF/CNN.
 
@@ -1109,6 +1193,16 @@ def _load_grid_predictions() -> tuple[dict, dict, dict]:
         grid_df.merge(preds_df, on="grid_id", how="inner")
         .dropna(subset=["pred_scaled_catboost", "pred_scaled_rf"])
         .reset_index(drop=True)
+    )
+
+    # Smooth cross-boundary prediction discontinuities for CatBoost / RF.
+    # Border cells pick up spatial-aggregate features from neighbouring
+    # barangays, biasing their predictions.  A gentle 30 % blend toward
+    # the 4-connected neighbour mean reduces these artefacts.
+    merged = _smooth_boundary_predictions(
+        merged,
+        pred_cols=["pred_scaled_catboost", "pred_scaled_rf"],
+        blend=0.3,
     )
 
     # Convert scaled predictions (0-1) to percentages
@@ -1233,51 +1327,49 @@ def _load_grid_predictions() -> tuple[dict, dict, dict]:
     rf_features = []
     cnn_features = []
 
-    # Prepare CNN join: parse indices from cell_id and merge to grid indices
-    if {"cell_id", "predicted_poverty"}.issubset(cnn_df.columns) and {"x_idx_x", "y_idx_x"}.issubset(grid_df.columns):
-        idx_df = cnn_df.copy()
+    # ── Attach CNN predictions ──────────────────────────────────────────
+    # Strategy 1: use cnn_pred column already present in the merged
+    #             predictions CSV (produced by merge_predictions.py).
+    # Strategy 2: fall back to joining with the separate CNN CSV via
+    #             grid index parsing (legacy path).
+    _cnn_attached = False
 
-        def _parse_cell_id(cell: str) -> tuple[int, int] | tuple[None, None]:
+    if "cnn_pred" in merged.columns and merged["cnn_pred"].notna().any():
+        # cnn_pred is in 0-1 scale; convert to percentage
+        merged["poverty_pct_cnn"] = merged["cnn_pred"] * 100.0
+        _cnn_attached = True
+
+    elif {"cell_id", "predicted_poverty"}.issubset(cnn_df.columns):
+        # Parse CNN cell_id → grid_id and join
+        def _cnn_cell_to_grid_id(cell: str):
             try:
                 parts = str(cell).split("_")
-                # Expect format like "cell_0000_0021"
-                if len(parts) != 3:
-                    return None, None
-                x = int(parts[1])
-                y = int(parts[2])
-                return x, y
+                if len(parts) == 3 and parts[0] == "cell":
+                    return f"{int(parts[1])}_{int(parts[2])}"
             except Exception:
-                return None, None
+                pass
+            return None
 
-        idx_df[["x_idx_x", "y_idx_x"]] = idx_df["cell_id"].apply(
-            lambda c: pd.Series(_parse_cell_id(c))
-        )
+        cnn_tmp = cnn_df.copy()
+        cnn_tmp["grid_id"] = cnn_tmp["cell_id"].apply(_cnn_cell_to_grid_id)
+        cnn_tmp = cnn_tmp.dropna(subset=["grid_id", "predicted_poverty"])
 
-        cnn_join = (
-            grid_df[["grid_id", "x_idx_x", "y_idx_x"]]
-            .merge(idx_df, on=["x_idx_x", "y_idx_x"], how="inner")
-            .dropna(subset=["predicted_poverty"])
-        )
-
-        cnn_join["poverty_pct_cnn"] = cnn_join["predicted_poverty"] * 100.0
-
-        # Align CNN back to the merged RF/CatBoost rows via grid_id
         merged = merged.merge(
-            cnn_join[["grid_id", "poverty_pct_cnn"]],
+            cnn_tmp[["grid_id", "predicted_poverty"]],
             on="grid_id",
             how="left",
         )
+        merged["poverty_pct_cnn"] = merged["predicted_poverty"] * 100.0
+        merged.drop(columns=["predicted_poverty"], errors="ignore", inplace=True)
+        _cnn_attached = True
 
-        # CNN quartiles (only where CNN prediction exists)
-        if merged["poverty_pct_cnn"].notna().any():
-            merged["poverty_quartile_cnn"] = pd.qcut(
-                merged["poverty_pct_cnn"].dropna() / 100.0,
-                q=4,
-                labels=labels,
-                duplicates="drop",
-            ).reindex(merged.index)
-        else:
-            merged["poverty_quartile_cnn"] = pd.NA
+    if _cnn_attached and merged["poverty_pct_cnn"].notna().any():
+        merged["poverty_quartile_cnn"] = pd.qcut(
+            merged["poverty_pct_cnn"].dropna() / 100.0,
+            q=4,
+            labels=labels,
+            duplicates="drop",
+        ).reindex(merged.index)
     else:
         merged["poverty_pct_cnn"] = pd.NA
         merged["poverty_quartile_cnn"] = pd.NA

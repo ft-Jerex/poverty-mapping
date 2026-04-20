@@ -501,33 +501,42 @@ def extract_images_advanced(grid_gdf: gpd.GeoDataFrame, sentinel2_path: Path, ou
                 data = np.transpose(data, (1, 2, 0))
                 data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
                 mean_val = float(data.mean())
+                
+                # Sentinel-2 reflectance after /10000 normalization is in 0-1 range
+                # Typical valid values: 0.01-0.3 for most land surfaces
+                # Thresholds adjusted for 0-1 normalized reflectance:
+                #   < 0.001 = no data/completely dark
+                #   < 0.02 = very dark (water, shadows) - needs CLAHE
+                #   < 0.1 = darker areas - needs gamma correction
+                #   >= 0.1 = normal - standard processing
 
-                if mean_val < 1:
-                    # completely dark -> synthetic
+                if mean_val < 0.001:
+                    # completely dark / no data -> synthetic placeholder
                     h, w, c = data.shape
-                    synth = np.random.normal(20, 10, (h, w, min(3, c)))
+                    synth = np.random.normal(0.1, 0.02, (h, w, min(3, c)))
                     synth = filters.gaussian(synth, sigma=2)
-                    synth = np.clip(synth, 0, 50)
+                    synth = np.clip(synth, 0, 0.3)
                     rgb = synth[:, :, :3] if c >= 3 else np.stack([synth[:, :, 0]]*3, axis=-1)
                     method = "synthetic"; stats["synthetic"] += 1
                 else:
                     rgb = data[:, :, :3] if data.shape[2] >= 3 else np.stack([data[:, :, 0]]*3, axis=-1)
-                    # percentile normalization
+                    # percentile normalization for 0-1 range data
                     if np.any(rgb > 0):
-                        if mean_val < 10:
+                        if mean_val < 0.02:
+                            # Very dark - use wider percentile range
                             pl, ph = np.percentile(rgb[rgb>0], 0.5), np.percentile(rgb[rgb>0], 99.5)
-                        elif mean_val < 50:
+                        elif mean_val < 0.1:
                             pl, ph = np.percentile(rgb[rgb>0], 1), np.percentile(rgb[rgb>0], 99)
                         else:
                             pl, ph = np.percentile(rgb[rgb>0], 2), np.percentile(rgb[rgb>0], 98)
                     else:
                         pl, ph = 0, 1
-                    if ph - pl < (0.01 if mean_val < 10 else 0.1):
-                        ph = pl + (0.01 if mean_val < 10 else 0.1)
+                    if ph - pl < 0.001:
+                        ph = pl + 0.001
                     rgb = np.clip((rgb - pl)/(ph - pl), 0, 1)
 
-                    if mean_val < 10:
-                        # CLAHE + gamma
+                    if mean_val < 0.02:
+                        # Very dark areas - CLAHE + gamma boost
                         rgbc = np.zeros_like(rgb)
                         for i in range(3):
                             ch = (rgb[:, :, i]*255).astype(np.uint8)
@@ -535,10 +544,12 @@ def extract_images_advanced(grid_gdf: gpd.GeoDataFrame, sentinel2_path: Path, ou
                             rgbc[:, :, i] = ch
                         rgb = np.power(rgbc, 0.4)
                         method = "clahe"; stats["clahe"] += 1
-                    elif mean_val < 50:
+                    elif mean_val < 0.1:
+                        # Darker areas - gamma correction
                         rgb = np.power(rgb, 0.6)
                         method = "gamma"; stats["gamma"] += 1
                     else:
+                        # Normal reflectance - standard processing
                         method = "standard"; stats["standard"] += 1
 
                 rgb_u8 = (rgb*255).astype(np.uint8)
